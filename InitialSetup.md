@@ -24,3 +24,6 @@ If everything is set up correctly, QEMU will display:
 
     Bootloader: Hello from Simple OS! 
     Kernel: Hello from the Kernel!
+
+### If 5. doesn't work, try :
+        bash build.sh
