@@ -17,6 +17,12 @@ This project can be built and run inside a Docker container so that everyone has
 
     docker build -t simple-os .
 
+## OR Force a fresh build (no cache):
+
+    docker build --no-cache -t simple-os .
+Use this option if you’ve updated the Dockerfile or run into errors during the normal build. 
+It ensures all dependencies are installed from scratch.
+
 ## Run container with mounted volume:
 
     docker run -it --rm -v ${PWD}:/project simple-os
