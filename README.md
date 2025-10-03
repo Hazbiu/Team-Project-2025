@@ -17,12 +17,13 @@ This project can be built and run inside a Docker container so that everyone has
 
     docker build -t simple-os .
 
-## Run the Docker Container
+## Run container with mounted volume:
 
-    docker run -it --rm simple-os
-  ```
+    docker run -it --rm -v ${PWD}:/project simple-os
+## The container sees your changes, rebuilds os-image.img, and runs QEMU.
 
 ## Expected output
 
     Bootloader: Hello from Simple OS!
     Kernel: Hello from the Kernel!
+
