@@ -1,0 +1,8 @@
+linux-6.6.3/
+*.o
+*.bin
+*.elf
+*.img
+*.iso
+*.log
+.git/
