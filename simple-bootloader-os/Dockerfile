@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y \
     bc \
     # to fetch kernel sources
     wget git \
-    libelf-dev libdw-dev zlib1g-dev binutils-dev \
+    libelf-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Set workdir inside container
