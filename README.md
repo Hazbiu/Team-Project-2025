@@ -49,18 +49,18 @@ This document describes how to build a Linux kernel with dm-verity support insid
 1. Start the container (interactive) with your project mounted:
 ```bash
 # from D:\Team_project\Team-Project-2025\simple-bootloader-os in PowerShell
-docker run -it --rm -v ${PWD}:/project simple-os bash
+docker run -it -v ${PWD}:/project simple-os bash
 
-## Download a stable kernel tarball (example v6.6.3)
-
+rm -rf /project/linux-6.6.3
+cd /tmp
 wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.3.tar.xz
-tar -xvf linux-6.6.3.tar.xz
+tar -xf linux-6.6.3.tar.xz
 cd linux-6.6.3
 make defconfig
-make menuconfig
-# after running make menuconfig, go to Device Drivers -> Multiple devices driver support (RAID and LVM)
-  -> Device mapper support (Y)
-  -> Verity target support (Y)
-# build Kernel
-    ## in linux-6.6.3 folder
-    make -j$(nproc)
+./scripts/config --enable BLK_DEV_DM
+./scripts/config --enable DM_VERITY
+./scripts/config --enable DM_VERITY_FEC
+./scripts/config --enable CRYPTO_SHA256
+
+make olddefconfig
+make -j$(nproc)
