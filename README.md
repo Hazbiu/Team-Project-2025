@@ -36,13 +36,6 @@ It ensures all dependencies are installed from scratch.
 ## Quit QUEMU and return to PowerShell
     Ctrl + A, then X
 
-# Build Linux Kernel with dm-verity (inside Docker)
-
-This document describes how to build a Linux kernel with dm-verity support inside the project Docker container, generate a dummy rootfs and verity metadata, and boot it in QEMU.
-
-> Assumes you already have the project Docker image (see `DOCKER_SETUP.md`) and Docker Desktop running.
-
----
 
 # Build Linux Kernel with dm-verity (inside Docker)
 
@@ -51,16 +44,20 @@ This document describes how to build a Linux kernel with dm-verity support insid
 # from D:\Team_project\Team-Project-2025\simple-bootloader-os in PowerShell
 docker run -it -v ${PWD}:/project simple-os bash
 
-rm -rf /project/linux-6.6.3
-cd /tmp
+cd /project
+rm -f linux-6.6.3.tar.xz
 wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.3.tar.xz
-tar -xf linux-6.6.3.tar.xz
+
+cd /root
+tar -xf /project/linux-6.6.3.tar.xz
 cd linux-6.6.3
+
 make defconfig
 ./scripts/config --enable BLK_DEV_DM
 ./scripts/config --enable DM_VERITY
 ./scripts/config --enable DM_VERITY_FEC
 ./scripts/config --enable CRYPTO_SHA256
-
 make olddefconfig
+
 make -j$(nproc)
+cp arch/x86/boot/bzImage /project/
