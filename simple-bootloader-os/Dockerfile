@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y \
     qemu-system-x86 \
     qemu-utils \
     dos2unix \
-    build-essential \ 
+    build-essential \
     # for make menuconfig
     libncurses-dev \  
     # required by kernel parser
