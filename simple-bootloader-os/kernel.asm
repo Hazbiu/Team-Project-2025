@@ -7,8 +7,8 @@ start:
     call print_string
 
 halt:
-    hlt
-    jmp halt
+    hlt       ;puts the CPU in sleep mode
+    jmp halt  ; infinite loop
 
 print_string:
     lodsb
