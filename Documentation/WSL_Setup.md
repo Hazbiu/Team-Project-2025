@@ -1,9 +1,8 @@
-````markdown
 # WSL Setup Guide for Project Scripts
 
 This guide explains how to properly set up WSL (Windows Subsystem for Linux) so that project scripts like `run_build.sh` and `build.sh` run without errors such as:
+````markdown
 
-```bash
 -bash: ./build.sh: cannot execute: required file not found
 ````
 
@@ -135,5 +134,6 @@ It should:
 * Install `dos2unix` if missing
 * Convert all `.sh` files in the project to Unix line endings
 * Make them executable
+
 
 If it runs without errors, everything is configured correctly.
