@@ -1,0 +1,139 @@
+````markdown
+# WSL Setup Guide for Project Scripts
+
+This guide explains how to properly set up WSL (Windows Subsystem for Linux) so that project scripts like `run_build.sh` and `build.sh` run without errors such as:
+
+```bash
+-bash: ./build.sh: cannot execute: required file not found
+````
+
+By following these steps, you’ll make sure your helper scripts work smoothly inside WSL — without Windows line-ending or permission issues.
+
+---
+
+## Create a folder for local WSL helpers
+
+Open your WSL terminal and run:
+
+```bash
+mkdir -p ~/wsl_helpers
+```
+
+---
+
+## Move the helper script to your local WSL helpers folder
+
+```bash
+mv /mnt/.../.../Team-Project-2025/src/run_build.sh ~/wsl_helpers/
+```
+
+> **Note:** Replace the `...` with your actual path.
+> `/mnt/*driver*/...` is your Windows path.
+> `~/wsl_helpers/` is your Linux home directory.
+
+---
+
+## Make the script executable
+
+```bash
+chmod +x ~/wsl_helpers/run_build.sh
+```
+
+---
+
+## Open your shell configuration file
+
+```bash
+nano ~/.bashrc
+```
+
+---
+
+## Add the helpers folder to your PATH
+
+At the very end of `.bashrc`, add:
+
+```bash
+echo 'export PATH="$HOME/wsl_helpers:$PATH"' >> ~/.bashrc
+```
+
+---
+
+## Reload your shell configuration
+
+```bash
+source ~/.bashrc
+```
+
+---
+
+## Test the script
+
+```bash
+run_build.sh
+```
+
+---
+
+## Troubleshooting: Missing OpenSSL headers
+
+If you see an error like this while running `./build.sh`:
+
+```text
+primary_bootloader.c:3:10: fatal error: openssl/evp.h: No such file or directory
+   3 | #include <openssl/evp.h>
+     |          ^~~~~~~~~~~~~~~
+compilation terminated.
+```
+
+Install the OpenSSL development library:
+
+```bash
+sudo apt update
+sudo apt install -y libssl-dev
+```
+
+Then rerun your build:
+
+```bash
+./build.sh
+```
+
+---
+
+## Full Test — Simulate a fresh start
+
+Navigate to your project and reset line endings to simulate a Windows clone:
+
+```bash
+cd /mnt/c/Programming/Team-Project-2025/src
+unix2dos *.sh 2>/dev/null || echo "unix2dos not installed — skip"
+```
+
+Now test that the problem appears again:
+
+```bash
+./build.sh
+```
+
+You should see:
+
+```bash
+-bash: ./build.sh: cannot execute: required file not found
+```
+
+---
+
+## Run helper setup
+
+```bash
+run_build.sh
+```
+
+It should:
+
+* Install `dos2unix` if missing
+* Convert all `.sh` files in the project to Unix line endings
+* Make them executable
+
+If it runs without errors, everything is configured correctly.
