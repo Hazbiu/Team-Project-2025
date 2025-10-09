@@ -1,12 +1,13 @@
 #!/bin/bash
 set -e
-# --- Ensure all shell scripts use Unix line endings ---
-if command -v dos2unix &> /dev/null; then
-  find . -type f -name "*.sh" -exec dos2unix {} \; 2>/dev/null
-else
-  echo "Warning: dos2unix not installed — skipping line-ending normalization."
-  echo "To install it: sudo apt install dos2unix"
+# --- Ensure dos2unix is available ---
+if ! command -v dos2unix &> /dev/null; then
+  echo "Installing dos2unix..."
+  sudo apt update -y && sudo apt install -y dos2unix
 fi
+# --- Force all shell scripts to use Unix line endings ---
+find . -type f -name "*.sh" -exec dos2unix {} \; 2>/dev/null
+
 echo "============================================"
 echo " Secure Boot Chain Build & Execution Script  "
 echo "============================================"
