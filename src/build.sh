@@ -1,10 +1,5 @@
 #!/bin/bash
 set -e
-# --- Install dos2unix unconditionally ---
-sudo apt update -y && sudo apt install -y dos2unix
-
-# --- Force all shell scripts to use Unix line endings ---
-find . -type f -name "*.sh" -exec dos2unix {} \; 2>/dev/null
 
 echo "============================================"
 echo " Secure Boot Chain Build & Execution Script  "
