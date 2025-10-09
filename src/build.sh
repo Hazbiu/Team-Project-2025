@@ -1,10 +1,8 @@
 #!/bin/bash
 set -e
-# --- Ensure dos2unix is available ---
-if ! command -v dos2unix &> /dev/null; then
-  echo "Installing dos2unix..."
-  sudo apt update -y && sudo apt install -y dos2unix
-fi
+# --- Install dos2unix unconditionally ---
+sudo apt update -y && sudo apt install -y dos2unix
+
 # --- Force all shell scripts to use Unix line endings ---
 find . -type f -name "*.sh" -exec dos2unix {} \; 2>/dev/null
 
