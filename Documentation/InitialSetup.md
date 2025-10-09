@@ -1,4 +1,4 @@
-                Initial Setup
+Initial Setup
 
 1.  Clone the repository 
         https://github.com/Hazbiu/Team-Project-2025.git
