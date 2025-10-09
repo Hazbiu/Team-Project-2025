@@ -137,3 +137,81 @@ It should:
 
 
 If it runs without errors, everything is configured correctly.
+
+
+## Example: Using `run_build.sh` inside your project folder
+
+When inside your project’s source directory in Windows:
+
+```bash
+C:\Users\Mateja\Documents\GitHub\Team-Project-2025\src>wsl
+mateja@MatejaSurfaceGo:/mnt/c/Users/Mateja/Documents/GitHub/Team-Project-2025/src$ run_build.sh
+============================================
+ WSL Helper: Ensure dos2unix & Run build.sh
+============================================
+dos2unix already installed.
+Converting all .sh files to Unix line endings...
+dos2unix: converting file ./build.sh to Unix format...
+dos2unix: converting file ./run_build.sh to Unix format...
+Making all .sh files executable...
+Running build.sh...
+============================================
+ Secure Boot Chain Build & Execution Script
+============================================
+[1/10] Using project root: /mnt/c/Users/Mateja/Documents/GitHub/Team-Project-2025/src
+[1/10] Boot directory:     /mnt/c/Users/Mateja/Documents/GitHub/Team-Project-2025/src/boot
+[1/10] Keys directory:     /mnt/c/Users/Mateja/Documents/GitHub/Team-Project-2025/src/keys
+
+[sudo] password for mateja:
+````
+
+---
+
+## `run_build.sh` Script Reference
+
+Below is the full helper script that automates the setup and build process:
+
+```bash
+#!/bin/bash
+set -e
+
+echo "============================================"
+echo " WSL Helper: Ensure dos2unix & Run build.sh "
+echo "============================================"
+
+# --- Check and install dos2unix if missing ---
+if ! command -v dos2unix &> /dev/null; then
+    echo "dos2unix not found. Installing..."
+    sudo apt update -y
+    sudo apt install -y dos2unix
+else
+    echo "dos2unix already installed."
+fi
+
+# --- Convert all .sh files to Unix line endings ---
+echo "Converting all .sh files to Unix line endings..."
+find . -type f -name "*.sh" -exec dos2unix {} \;
+
+# --- Make all .sh files executable ---
+echo "Making all .sh files executable..."
+find . -type f -name "*.sh" -exec chmod +x {} \;
+
+# --- Run build.sh ---
+echo "Running build.sh..."
+./build.sh
+```
+
+---
+
+## Why We Use `run_build.sh`
+
+We’ll be using `run_build.sh` from now on because it automates all the setup steps needed for reliable builds inside WSL.
+Specifically, it:
+
+* Ensures `dos2unix` is installed
+* Fixes Windows-style line endings in all shell scripts
+* Applies executable permissions to every `.sh` file
+* Finally, runs the main `build.sh` script that compiles the project or kernel components
+
+In short, `run_build.sh` guarantees that your build environment is always consistent, preventing common WSL issues like line-ending errors or permission problems — so you can just run one command and build everything smoothly.
+
