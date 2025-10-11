@@ -158,7 +158,6 @@ make test
 ```bash
 make run
 ```
-'
 ## Fastest way
 Easiest and fastest way is to use: 
 ```bash
@@ -202,3 +201,4 @@ make boot
 
 
 Use `make help` to see all available commands at any time.
+
