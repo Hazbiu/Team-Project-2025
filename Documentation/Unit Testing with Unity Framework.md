@@ -1,10 +1,10 @@
 # Unit Testing with Unity Framework
 
-## 🧪 What is Unity Testing?
+## What is Unity Testing?
 
 Unity is a lightweight unit testing framework specifically designed for **embedded C systems**. It provides a simple yet powerful way to test individual components of our bootloaders in isolation.
 
-## 🎯 Why We Use Unity
+## Why We Use Unity
 
 ### For Our Secure Bootloaders:
 - **Isolated Testing**: Test bootloader logic without hardware dependencies
@@ -26,8 +26,15 @@ test/
 └── test_verify.c          # Integration tests (existing)
 ```
 
-## 🚀 How to Use
-
+##  How to Use
+### Build 
+```bash
+run_build.sh  
+```
+or
+```bash
+make boot
+```
 ### Run All Unit Tests
 ```bash
 make unit-tests
@@ -46,7 +53,7 @@ make test          # Integration tests (file level)
 make run           # System test (full boot chain)
 ```
 
-## 🧠 What We Test with Unity
+## What We Test with Unity
 
 ### Primary Bootloader Tests:
 - Verification logic for secondary bootloader signatures
@@ -84,7 +91,7 @@ int main(void) {
 }
 ```
 
-## 📊 Test Results
+## Test Results
 
 When tests pass:
 ```
@@ -96,7 +103,7 @@ test_primary_boot_logic:PASS
 OK
 ```
 
-## 🎨 Benefits for Our Project
+## Benefits for Our Project
 
 ### 1. **Faster Development**
 - Test components without full boot chain
@@ -114,7 +121,7 @@ OK
 - Automated testing in Docker/CI pipelines
 - Consistent results across environments
 
-## 🔍 Testing Strategy
+## Testing Strategy
 
 | Test Type | Command | Purpose |
 |-----------|---------|---------|
@@ -122,7 +129,7 @@ OK
 | **Integration Tests** | `make test` | Test file-based workflows |
 | **System Tests** | `make run` | Test full boot chain |
 
-## 🛠️ Troubleshooting
+## Troubleshooting
 
 If unit tests fail:
 ```bash
@@ -135,11 +142,12 @@ Check Unity files exist:
 ls test/unity/
 ```
 
-## 📚 Learn More
+## Learn More
 
 - [Unity Framework GitHub](https://github.com/ThrowTheSwitch/Unity)
 - [Unity Documentation](https://github.com/ThrowTheSwitch/Unity/blob/master/docs/UnityGettingStartedGuide.md)
 
 ---
 
-**Unity testing ensures our secure bootloaders are reliable and maintainable!** 🔐✨
+
+**Unity testing ensures our secure bootloaders are reliable and maintainable!** 
