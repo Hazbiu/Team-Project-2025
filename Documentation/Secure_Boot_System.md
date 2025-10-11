@@ -1,7 +1,5 @@
 # Secure Boot System - Complete Documentation
 
-
-
 ## 📁 Complete Project Structure
 
 ```
@@ -51,7 +49,7 @@ src/
 ```bash
 make boot                    # Build both primary and secondary bootloaders
 make all                     # Same as 'make boot'
-./run_build.sh              # Same as 'make boot' - uses the build script
+./run_build.sh               # Uses build script
 make clean                   # Remove all built executables and test runners
 ```
 
@@ -98,7 +96,7 @@ cd src/
 
 # 3. Build everything
 make boot
-# OR use the build script:
+# And use the build script:
 ./run_build.sh
 ```
 
@@ -160,6 +158,13 @@ make test
 ```bash
 make run
 ```
+'
+## Fastest way
+Easiest and fastest way is to use: 
+```bash
+run_build.sh
+```
+and then follow either testing or bootchain
 
 ## Prerequisites Checklist
 
@@ -194,5 +199,6 @@ sudo apt install qemu-system-x86
 make clean
 make boot
 ```
+
 
 Use `make help` to see all available commands at any time.
