@@ -53,7 +53,7 @@ nano ~/.bashrc
 At the very end of `.bashrc`, add:
 
 ```bash
-echo 'export PATH="$HOME/wsl_helpers:$PATH"' >> ~/.bashrc
+export PATH="$HOME/wsl_helpers:$PATH"
 ```
 
 ---
@@ -73,6 +73,19 @@ run_build.sh
 ```
 
 ---
+## Troubleshooting -bash: ./build.sh: cannot execute: required file not found
+
+If you still get an error that the file is missing, this is because the run_build.sh file we coppied from github to Wsl_helpers has windows style line endings, to fix this (this fix is only to be done once if necessary):
+
+Navigate to wsl_helpers file:
+```bash
+cd ~/wsl_helpers/
+```
+List the content to double check run_build.sh has been properly coppied, and then finally run:
+```bash
+unix2dos run_build.sh
+```
+This will fix line endings issue for the run_build.sh file thats being kept localy in WSL.
 
 ## Troubleshooting: Missing OpenSSL headers
 
@@ -214,4 +227,5 @@ Specifically, it:
 * Finally, runs the main `build.sh` script that compiles the project or kernel components
 
 In short, `run_build.sh` guarantees that your build environment is always consistent, preventing common WSL issues like line-ending errors or permission problems — so you can just run one command and build everything smoothly.
+
 
