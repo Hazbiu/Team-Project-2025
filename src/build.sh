@@ -5,28 +5,81 @@ echo "============================================"
 echo " Secure Boot Chain Build & Execution Script  "
 echo "============================================"
 
+# ==========================================================
+#  PREPARATION (copy project from Windows FS into Linux home)
+# ==========================================================
+echo "[0/10] Preparing clean workspace in Linux FS..."
+
+cd ~
+# Safely delete previous TeamRoot, including mounted dirs, with root permissions
+if [ -d ~/TeamRoot ]; then
+  echo "Cleaning up old TeamRoot workspace..."
+  sudo umount ~/TeamRoot/rootfs/{proc,sys,dev} 2>/dev/null || true
+  sudo rm -rf ~/TeamRoot
+fi
+mkdir -p ~/TeamRoot
+
+# Copy core project files from Windows side into real Linux FS
+cp -r /mnt/d/Team-Project-2025/src/boot \
+      /mnt/d/Team-Project-2025/src/keys \
+      /mnt/d/Team-Project-2025/src/build.sh \
+      /mnt/d/Team-Project-2025/src/run_build.sh \
+      ~/TeamRoot/ 2>/dev/null || true
+
+# Copy local kernel source if it exists
+if [ -d ~/linux-6.6 ]; then
+  cp -r ~/linux-6.6 ~/TeamRoot/
+else
+  echo "No ~/linux-6.6 directory found — skipping kernel source copy."
+fi
+
+cd ~/TeamRoot
+echo "Workspace ready at ~/TeamRoot"
+ls
+
+# ==========================================================
+#  SECURE BOOT BUILD PROCESS
+# ==========================================================
+
 # --- Detect and normalize paths ---
 ROOT_DIR="$(pwd)"
 BOOT_DIR="${ROOT_DIR}/boot"
 KEYS_DIR="${ROOT_DIR}/keys"
 WORKSPACE="/workspace"
+ROOTFS_DIR="${ROOT_DIR}/rootfs"
+ROOTFS_IMG="${BOOT_DIR}/rootfs.img"
 
+echo
 echo "[1/10] Using project root: $ROOT_DIR"
 echo "[1/10] Boot directory:     $BOOT_DIR"
 echo "[1/10] Keys directory:     $KEYS_DIR"
 echo ""
 
+# --- Safety check: avoid Windows-mounted paths (/mnt/...) ---
+if [[ "$ROOT_DIR" == /mnt/* ]]; then
+  echo "ERROR: Running from a Windows-mounted path ($ROOT_DIR)."
+  echo "Move the project into your Linux home (e.g., ~/TeamRoot) and run again."
+  exit 1
+fi
+
 # --- Check dependencies ---
-for cmd in gcc openssl qemu-system-x86_64; do
-  if ! command -v $cmd &> /dev/null; then
-    echo "Error: '$cmd' not found. Please install it via apt:"
-    echo "sudo apt install build-essential qemu-system-x86 openssl -y"
+for cmd in gcc openssl qemu-system-x86_64 debootstrap; do
+  if ! command -v "$cmd" &>/dev/null; then
+    echo "Error: '$cmd' not found. Install with:"
+    echo "  sudo apt install -y build-essential qemu-system-x86 openssl debootstrap"
     exit 1
   fi
 done
 
+# --- Install dm-verity and JSON dependencies ---
+echo "[1/10] Installing dm-verity and JSON dependencies..."
+# This ensures you have the veritysetup tool and uuidgen
+sudo apt update
+sudo apt install -y cryptsetup-bin uuid-runtime jq
+# ---------------------------------------------------
+
 # --- Create workspace ---
-sudo mkdir -p ${WORKSPACE}/boot ${WORKSPACE}/keys
+sudo mkdir -p "${WORKSPACE}/boot" "${WORKSPACE}/keys"
 
 # --- Build Bootloaders ---
 echo "[2/10] Building primary and secondary bootloaders..."
@@ -52,16 +105,16 @@ if [ ! -f "${BOOT_DIR}/bl_private.pem" ]; then
 fi
 
 # --- Copy secondary bootloader to workspace ---
-sudo cp secondary_bootloader.bin ${WORKSPACE}/boot/
+sudo cp secondary_bootloader.bin "${WORKSPACE}/boot/"
 
 # --- Sign secondary bootloader with RoT private key ---
 echo "[5/10] Signing secondary bootloader..."
 sudo openssl dgst -sha256 -sign "${KEYS_DIR}/rot_private.pem" \
-  -out ${WORKSPACE}/boot/secondary_bootloader.sig \
-  ${WORKSPACE}/boot/secondary_bootloader.bin
+  -out "${WORKSPACE}/boot/secondary_bootloader.sig" \
+  "${WORKSPACE}/boot/secondary_bootloader.bin"
 
 # --- Copy signature back to project ---
-cp ${WORKSPACE}/boot/secondary_bootloader.sig "${BOOT_DIR}/"
+cp "${WORKSPACE}/boot/secondary_bootloader.sig" "${BOOT_DIR}/"
 
 # --- Sign kernel image with bootloader private key ---
 echo "[6/10] Signing kernel image..."
@@ -71,9 +124,98 @@ openssl dgst -sha256 -sign "${BOOT_DIR}/bl_private.pem" \
 
 # --- Show summary of generated artifacts ---
 echo "[7/10] Generated files:"
-ls -lh "${BOOT_DIR}" | grep -E "bootloader|kernel|pem|sig"
+ls -lh "${BOOT_DIR}" | grep -E "bootloader|kernel|pem|sig" || true
 
-# --- Run Primary Bootloader ---
-echo "[8/10] Executing primary bootloader (will chain to secondary)..."
-cd "$BOOT_DIR"
-./primary_bootloader
+# --- Build minimal root filesystem (once) ---
+echo "[8/10] Building minimal root filesystem..."
+if [ ! -d "$ROOTFS_DIR" ]; then
+  sudo debootstrap --arch=amd64 bookworm "$ROOTFS_DIR" http://deb.debian.org/debian/
+  echo "RootFS created at $ROOTFS_DIR"
+fi
+
+# --- ALWAYS configure users (even if rootfs already existed) ---
+echo "[8.1] Configuring users inside rootfs..."
+sudo mount --bind /dev  "$ROOTFS_DIR/dev"
+sudo mount --bind /proc "$ROOTFS_DIR/proc"
+sudo mount --bind /sys  "$ROOTFS_DIR/sys"
+
+sudo chroot "$ROOTFS_DIR" bash -c "
+  set -e
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y
+  apt-get install -y passwd login sudo
+
+  # Unlock and set root password
+  passwd -d root || true
+  echo 'root:root' | chpasswd
+  passwd -u root || true
+
+  # Create user 'andre' with sudo
+  id -u andre &>/dev/null || useradd -m -s /bin/bash andre
+  echo 'andre:andre' | chpasswd
+  usermod -aG sudo andre
+
+  # Enable serial console login
+  systemctl enable serial-getty@ttyS0.service || true
+
+  apt-get clean
+"
+
+sudo umount "$ROOTFS_DIR/dev"  || true
+sudo umount "$ROOTFS_DIR/proc" || true
+sudo umount "$ROOTFS_DIR/sys"  || true
+
+echo "User setup complete (root/root and andre/andre)"
+
+# --- Package rootfs into ext4 image ---
+echo "Packaging rootfs into ext4 image..."
+dd if=/dev/zero of="$ROOTFS_IMG" bs=1M count=512
+mkfs.ext4 -F "$ROOTFS_IMG"
+
+sudo mkdir -p /mnt/rootfs_build
+sudo mount -o loop "$ROOTFS_IMG" /mnt/rootfs_build
+sudo cp -a "$ROOTFS_DIR"/* /mnt/rootfs_build
+sudo umount /mnt/rootfs_build
+echo "RootFS image ready at $ROOTFS_IMG"
+
+# --- Add your own path to copy your images to Windows side ---
+DEST_PATH="/mnt/d/Team-Project-2025/src/boot"
+cp "$ROOTFS_IMG" "$DEST_PATH"
+
+# --- Sign the rootfs image ---
+echo "[9/10] Signing rootfs image..."
+openssl dgst -sha256 -sign "${BOOT_DIR}/bl_private.pem" \
+  -out "${BOOT_DIR}/rootfs.img.sig" \
+  "$ROOTFS_IMG"
+cp "${BOOT_DIR}/rootfs.img.sig" "$DEST_PATH"
+
+
+# --- Create the dm-verity Hash Image ---
+echo "[9/10] Creating dm-verity hash image (rootfs_verity.img)..."
+
+# This command uses rootfs.img as the data source (it is NOT modified)
+# and writes the hash tree to rootfs_verity.img.
+sudo veritysetup format "$ROOTFS_IMG" "${BOOT_DIR}/rootfs_verity.img" \
+  --data-block-size=4096 \
+  --hash-block-size=4096 \
+  --hash=sha256 \
+  --uuid="$(uuidgen)" | tee "${BOOT_DIR}/verity_info.txt"
+
+# Store the path to the original location on the Windows filesystem
+DEST_PATH="/mnt/d/Team-Project-2025/src/boot"
+
+# Copy all three generated artifacts back to the Windows path
+echo "Copying rootfs.img, rootfs_verity.img, and verity_info.txt to $DEST_PATH"
+cp "$ROOTFS_IMG" "$DEST_PATH/"
+cp "${BOOT_DIR}/rootfs_verity.img" "$DEST_PATH/"
+cp "${BOOT_DIR}/verity_info.txt" "$DEST_PATH/"
+# ----------------------------------------------------------------------
+
+# --- Launch in QEMU ---
+echo "[10/10] Launching Secure Boot Demo in QEMU..."
+qemu-system-x86_64 \
+  -m 1024 \
+  -kernel "${BOOT_DIR}/kernel_image.bin" \
+  -drive file="${ROOTFS_IMG}",format=raw,if=virtio \
+  -append "root=/dev/vda rw console=ttyS0" \
+  -nographic
