@@ -20,10 +20,10 @@ fi
 mkdir -p ~/TeamRoot
 
 # Copy core project files from Windows side into real Linux FS
-cp -r /mnt/c/Programming/Team-Project-2025/src/boot \
-      /mnt/c/Programming/Team-Project-2025/src/keys \
-      /mnt/c/Programming/Team-Project-2025/src/build.sh \
-      /mnt/c/Programming/Team-Project-2025/src/run_build.sh \
+cp -r /mnt/d/Team-Project-2025/src/boot \
+      /mnt/d/Team-Project-2025/src/keys \
+      /mnt/d/Team-Project-2025/src/build.sh \
+      /mnt/d/Team-Project-2025/src/run_build.sh \
       ~/TeamRoot/ 2>/dev/null || true
 
 # Copy local kernel source if it exists
@@ -70,6 +70,13 @@ for cmd in gcc openssl qemu-system-x86_64 debootstrap; do
     exit 1
   fi
 done
+
+# --- Install dm-verity and JSON dependencies ---
+echo "[1/10] Installing dm-verity and JSON dependencies..."
+# This ensures you have the veritysetup tool and uuidgen
+sudo apt update
+sudo apt install -y cryptsetup-bin uuid-runtime jq
+# ---------------------------------------------------
 
 # --- Create workspace ---
 sudo mkdir -p "${WORKSPACE}/boot" "${WORKSPACE}/keys"
@@ -143,10 +150,10 @@ sudo chroot "$ROOTFS_DIR" bash -c "
   echo 'root:root' | chpasswd
   passwd -u root || true
 
-  # Create user 'keti' with sudo
-  id -u keti &>/dev/null || useradd -m -s /bin/bash keti
-  echo 'keti:keti' | chpasswd
-  usermod -aG sudo keti
+  # Create user 'andre' with sudo
+  id -u andre &>/dev/null || useradd -m -s /bin/bash andre
+  echo 'andre:andre' | chpasswd
+  usermod -aG sudo andre
 
   # Enable serial console login
   systemctl enable serial-getty@ttyS0.service || true
@@ -158,7 +165,7 @@ sudo umount "$ROOTFS_DIR/dev"  || true
 sudo umount "$ROOTFS_DIR/proc" || true
 sudo umount "$ROOTFS_DIR/sys"  || true
 
-echo "User setup complete (root/root and keti/keti)"
+echo "User setup complete (root/root and andre/andre)"
 
 # --- Package rootfs into ext4 image ---
 echo "Packaging rootfs into ext4 image..."
@@ -171,11 +178,38 @@ sudo cp -a "$ROOTFS_DIR"/* /mnt/rootfs_build
 sudo umount /mnt/rootfs_build
 echo "RootFS image ready at $ROOTFS_IMG"
 
+# --- Add your own path to copy your images to Windows side ---
+DEST_PATH="/mnt/d/Team-Project-2025/src/boot"
+cp "$ROOTFS_IMG" "$DEST_PATH"
+
 # --- Sign the rootfs image ---
 echo "[9/10] Signing rootfs image..."
 openssl dgst -sha256 -sign "${BOOT_DIR}/bl_private.pem" \
   -out "${BOOT_DIR}/rootfs.img.sig" \
   "$ROOTFS_IMG"
+cp "${BOOT_DIR}/rootfs.img.sig" "$DEST_PATH"
+
+
+# --- Create the dm-verity Hash Image ---
+echo "[9/10] Creating dm-verity hash image (rootfs_verity.img)..."
+
+# This command uses rootfs.img as the data source (it is NOT modified)
+# and writes the hash tree to rootfs_verity.img.
+sudo veritysetup format "$ROOTFS_IMG" "${BOOT_DIR}/rootfs_verity.img" \
+  --data-block-size=4096 \
+  --hash-block-size=4096 \
+  --hash=sha256 \
+  --uuid="$(uuidgen)" | tee "${BOOT_DIR}/verity_info.txt"
+
+# Store the path to the original location on the Windows filesystem
+DEST_PATH="/mnt/d/Team-Project-2025/src/boot"
+
+# Copy all three generated artifacts back to the Windows path
+echo "Copying rootfs.img, rootfs_verity.img, and verity_info.txt to $DEST_PATH"
+cp "$ROOTFS_IMG" "$DEST_PATH/"
+cp "${BOOT_DIR}/rootfs_verity.img" "$DEST_PATH/"
+cp "${BOOT_DIR}/verity_info.txt" "$DEST_PATH/"
+# ----------------------------------------------------------------------
 
 # --- Launch in QEMU ---
 echo "[10/10] Launching Secure Boot Demo in QEMU..."
