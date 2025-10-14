@@ -81,6 +81,39 @@ sudo apt install -y cryptsetup-bin uuid-runtime jq
 # --- Create workspace ---
 sudo mkdir -p "${WORKSPACE}/boot" "${WORKSPACE}/keys"
 
+# --- Build and Check gen_init_cpio dependency ---
+echo "[1.2/10] Checking for gen_init_cpio..."
+
+if ! command -v gen_init_cpio &>/dev/null; then
+    GEN_CPIO_PATH="${ROOT_DIR}/linux-6.6/usr/gen_init_cpio"
+
+    if [ -f "$GEN_CPIO_PATH" ]; then
+        echo "gen_init_cpio already built. Copying to BOOT_DIR."
+        cp "$GEN_CPIO_PATH" "$BOOT_DIR/"
+    else
+        echo "gen_init_cpio not found. Attempting to build from source..."
+        if [ -d "${ROOT_DIR}/linux-6.6" ]; then
+            # Build the utility inside the kernel source directory
+            make -C "${ROOT_DIR}/linux-6.6" usr/gen_init_cpio
+            
+            # Check if build was successful and copy it
+            if [ -f "$GEN_CPIO_PATH" ]; then
+                echo "Build successful. Copying executable to BOOT_DIR."
+                cp "$GEN_CPIO_PATH" "$BOOT_DIR/"
+            else
+                echo "Error: Failed to build gen_init_cpio. Kernel source might be incomplete."
+                exit 1
+            fi
+        else
+            echo "Error: gen_init_cpio is missing and kernel source (~/linux-6.6) was not found in ~/TeamRoot."
+            exit 1
+        fi
+    fi
+    # Add the BOOT_DIR to PATH temporarily so the subsequent initramfs step can find it
+    export PATH=$PATH:"$BOOT_DIR"
+fi
+
+
 # --- Build Bootloaders ---
 echo "[2/10] Building primary and secondary bootloaders..."
 cd "$BOOT_DIR"
@@ -170,6 +203,8 @@ echo "User setup complete (root/root and andre/andre)"
 
 # --- Build initramfs using gen_init_cpio ---
 echo "[8.2] Building initramfs using gen_init_cpio..."
+
+sudo make -C ~/linux-6.6 usr/gen_init_cpio
 
 INITRAMFS_DIR="${BOOT_DIR}/initramfs"
 INITRAMFS_LIST="${BOOT_DIR}/initramfs_list.txt"
@@ -329,7 +364,7 @@ echo "[10/10] Launching Secure Boot Demo in QEMU..."
 qemu-system-x86_64 \
   -m 1024 \
   -kernel "${BOOT_DIR}/kernel_image.bin" \
-  -initrd "${BOOT_DIR}/initramfs.cpio.gz" \
+  -initrd "${BOOT_DIR}/rootfs.cpio.gz" \
   -drive file="${ROOTFS_IMG}",format=raw,if=virtio \
   -append "root=/dev/vda rw console=ttyS0" \
   -nographic
