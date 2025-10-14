@@ -20,14 +20,12 @@ fi
 mkdir -p ~/TeamRoot
 
 # Copy core project files from Windows side into real Linux FS
-cp -r /mnt/c/Programming/Team-Project-2025/src/boot \
-      /mnt/c/Programming/Team-Project-2025/src/keys \
-      /mnt/c/Programming/Team-Project-2025/src/build \
-      /mnt/c/Programming/Team-Project-2025/src/build.sh \
-      /mnt/c/Programming/Team-Project-2025/src/run_build.sh \
+cp -r /mnt/d/Team-Project-2025/src/boot \
+      /mnt/d/Team-Project-2025/src/keys \
+      /mnt/d/Team-Project-2025/src/build.sh \
+      /mnt/d/Team-Project-2025/src/run_build.sh \
+      /mnt/d/Team-Project-2025/src/build \
       ~/TeamRoot/ 2>/dev/null || true
-
-chmod +x ~/TeamRoot/build/*.sh 2>/dev/null || true
 
 # Copy local kernel source if it exists
 if [ -d ~/linux-6.6 ]; then
