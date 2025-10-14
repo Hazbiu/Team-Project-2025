@@ -1,12 +1,44 @@
-#!/bin/bash
-set -e
+# #!/bin/bash
+# set -e
 
-echo "============================================"
-echo " Secure Boot Chain Build & Execution Script  "
-echo "============================================"
+# echo "============================================"
+# echo " Secure Boot Chain Build & Execution Script  "
+# echo "============================================"
 
+# # ==========================================================
+# #  PREPARATION (copy project from Windows FS into Linux home)
+# # ==========================================================
+# echo "[0/10] Preparing clean workspace in Linux FS..."
+
+# cd ~
+# # Safely delete previous TeamRoot, including mounted dirs, with root permissions
+# if [ -d ~/TeamRoot ]; then
+#   echo "Cleaning up old TeamRoot workspace..."
+#   sudo umount ~/TeamRoot/rootfs/{proc,sys,dev} 2>/dev/null || true
+#   sudo rm -rf ~/TeamRoot
+# fi
+# mkdir -p ~/TeamRoot
+
+# # Copy core project files from Windows side into real Linux FS
+# cp -r /mnt/d/Team-Project-2025/src/boot \
+#       /mnt/d/Team-Project-2025/src/keys \
+#       /mnt/d/Team-Project-2025/src/build.sh \
+#       /mnt/d/Team-Project-2025/src/run_build.sh \
+#       /mnt/d/Team-Project-2025/src/build \
+#       ~/TeamRoot/ 2>/dev/null || true
+
+# # Copy local kernel source if it exists
+# if [ -d ~/linux-6.6 ]; then
+#   cp -r ~/linux-6.6 ~/TeamRoot/
+# else
+#   echo "No ~/linux-6.6 directory found — skipping kernel source copy."
+# fi
+
+# cd ~/TeamRoot
+# echo "Workspace ready at ~/TeamRoot"
+# ls
 # ==========================================================
-#  PREPARATION (copy project from Windows FS into Linux home)
+#  PREPARATION (Robust, Self-Detecting Copy)
 # ==========================================================
 echo "[0/10] Preparing clean workspace in Linux FS..."
 
@@ -19,25 +51,78 @@ if [ -d ~/TeamRoot ]; then
 fi
 mkdir -p ~/TeamRoot
 
-# Copy core project files from Windows side into real Linux FS
-cp -r /mnt/d/Team-Project-2025/src/boot \
-      /mnt/d/Team-Project-2025/src/keys \
-      /mnt/d/Team-Project-2025/src/build.sh \
-      /mnt/d/Team-Project-2025/src/run_build.sh \
-      /mnt/d/Team-Project-2025/src/build \
-      ~/TeamRoot/ 2>/dev/null || true
 
-# Copy local kernel source if it exists
-if [ -d ~/linux-6.6 ]; then
-  cp -r ~/linux-6.6 ~/TeamRoot/
-else
-  echo "No ~/linux-6.6 directory found — skipping kernel source copy."
+# --- 1. DYNAMICALLY DETECT PROJECT PATH ---
+PROJECT_BASE_DIR=""
+PROJECT_NAME="Team-Project-2025"
+SRC_SUBDIR="src"
+MOUNT_POINTS="/mnt/c /mnt/d /mnt/e" # Common Windows mount points
+
+echo "Attempting to locate $PROJECT_NAME..."
+
+for mount in $MOUNT_POINTS; do
+    # Check for the project source folder structure
+    TARGET_PATH="$mount/Programming/$PROJECT_NAME/$SRC_SUBDIR"
+    if [ -d "$TARGET_PATH" ]; then
+        PROJECT_BASE_DIR="$TARGET_PATH"
+        break
+    fi
+    # Check root of drive (for less structured projects)
+    TARGET_PATH="$mount/$PROJECT_NAME/$SRC_SUBDIR"
+    if [ -d "$TARGET_PATH" ]; then
+        PROJECT_BASE_DIR="$TARGET_PATH"
+        break
+    fi
+done
+
+if [ -z "$PROJECT_BASE_DIR" ]; then
+    echo "ERROR: Could not find project source folder ('$PROJECT_NAME/$SRC_SUBDIR') in common mount points."
+    echo "Please check your Windows drive letters and directory structure."
+    exit 1
 fi
+
+echo "Project source detected at: $PROJECT_BASE_DIR"
+
+# --- 2. COPY PROJECT FILES USING DETECTED PATH (Folders & Files) ---
+
+# We explicitly create the target directories first to prevent the 'Not a directory' corruption error.
+mkdir -p ~/TeamRoot/boot
+mkdir -p ~/TeamRoot/keys
+mkdir -p ~/TeamRoot/build
+
+# Use the contents of the detected path (folders are copied into the pre-created directories)
+# Note the '/.' to copy *contents* of the source directory.
+cp -r "$PROJECT_BASE_DIR/boot/." ~/TeamRoot/boot/ 2>/dev/null || true
+cp -r "$PROJECT_BASE_DIR/keys/." ~/TeamRoot/keys/ 2>/dev/null || true
+cp -r "$PROJECT_BASE_DIR/build/." ~/TeamRoot/build/ 2>/dev/null || true
+
+# Copy standalone files directly to ~/TeamRoot/
+cp "$PROJECT_BASE_DIR/build.sh" \
+   "$PROJECT_BASE_DIR/run_build.sh" \
+   ~/TeamRoot/ 2>/dev/null || true
+
+# --- 3. COPY KERNEL SOURCE ROBUSTLY (Excluding .git) ---
+
+# Check for rsync dependency and install if necessary
+if ! command -v rsync &>/dev/null; then
+    echo "Rsync not found. Installing now..."
+    sudo apt update && sudo apt install -y rsync
+fi
+
+if [ -d ~/linux-6.6 ]; then
+    echo "Copying linux-6.6 source (excluding .git/ directory) using rsync..."
+    # rsync is used to robustly copy the source, skipping the problematic Git files
+    rsync -a --exclude '.git' ~/linux-6.6/ ~/TeamRoot/linux-6.6
+else
+    echo "No ~/linux-6.6 directory found — skipping kernel source copy."
+fi
+
+# Set executable permissions (as in your original script)
+chmod +x ~/TeamRoot/build/*.sh 2>/dev/null || true
 
 cd ~/TeamRoot
 echo "Workspace ready at ~/TeamRoot"
 ls
-
 # ==========================================================
 #  SECURE BOOT BUILD PROCESS
 # ==========================================================
