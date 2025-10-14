@@ -20,11 +20,14 @@ fi
 mkdir -p ~/TeamRoot
 
 # Copy core project files from Windows side into real Linux FS
-cp -r /mnt/d/Team-Project-2025/src/boot \
-      /mnt/d/Team-Project-2025/src/keys \
-      /mnt/d/Team-Project-2025/src/build.sh \
-      /mnt/d/Team-Project-2025/src/run_build.sh \
+cp -r /mnt/c/Programming/Team-Project-2025/src/boot \
+      /mnt/c/Programming/Team-Project-2025/src/keys \
+      /mnt/c/Programming/Team-Project-2025/src/build \
+      /mnt/c/Programming/Team-Project-2025/src/build.sh \
+      /mnt/c/Programming/Team-Project-2025/src/run_build.sh \
       ~/TeamRoot/ 2>/dev/null || true
+
+chmod +x ~/TeamRoot/build/*.sh 2>/dev/null || true
 
 # Copy local kernel source if it exists
 if [ -d ~/linux-6.6 ]; then
@@ -159,163 +162,17 @@ openssl dgst -sha256 -sign "${BOOT_DIR}/bl_private.pem" \
 echo "[7/10] Generated files:"
 ls -lh "${BOOT_DIR}" | grep -E "bootloader|kernel|pem|sig" || true
 
-# --- Build minimal root filesystem (once) ---
-echo "[8/10] Building minimal root filesystem..."
-if [ ! -d "$ROOTFS_DIR" ]; then
-  sudo debootstrap --arch=amd64 bookworm "$ROOTFS_DIR" http://deb.debian.org/debian/
-  echo "RootFS created at $ROOTFS_DIR"
-fi
+# --- Build and configure root filesystem using external script ---
+export ROOT_DIR BOOT_DIR KEYS_DIR ROOTFS_DIR
+bash "${ROOT_DIR}/build/rootfs.sh"
 
-# --- ALWAYS configure users (even if rootfs already existed) ---
-echo "[8.1] Configuring users inside rootfs..."
-sudo mount --bind /dev  "$ROOTFS_DIR/dev"
-sudo mount --bind /proc "$ROOTFS_DIR/proc"
-sudo mount --bind /sys  "$ROOTFS_DIR/sys"
-
-sudo chroot "$ROOTFS_DIR" bash -c "
-  set -e
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y passwd login sudo
-
-  # Unlock and set root password
-  passwd -d root || true
-  echo 'root:root' | chpasswd
-  passwd -u root || true
-
-  # Create user 'andre' with sudo
-  id -u andre &>/dev/null || useradd -m -s /bin/bash andre
-  echo 'andre:andre' | chpasswd
-  usermod -aG sudo andre
-
-  # Enable serial console login
-  systemctl enable serial-getty@ttyS0.service || true
-
-  apt-get clean
-"
-
-sudo umount "$ROOTFS_DIR/dev"  || true
-sudo umount "$ROOTFS_DIR/proc" || true
-sudo umount "$ROOTFS_DIR/sys"  || true
-
-echo "User setup complete (root/root and andre/andre)"
-
-
-# --- Build initramfs using gen_init_cpio ---
-echo "[8.2] Building initramfs using gen_init_cpio..."
-
-sudo make -C ~/linux-6.6 usr/gen_init_cpio
-
-INITRAMFS_DIR="${BOOT_DIR}/initramfs"
-INITRAMFS_LIST="${BOOT_DIR}/initramfs_list.txt"
-INITRAMFS_IMG="${BOOT_DIR}/initramfs.cpio.gz"
-
-# Clean and recreate
-sudo rm -rf "$INITRAMFS_DIR"
-mkdir -p "$INITRAMFS_DIR"/{bin,sbin,etc,proc,sys,dev,newroot}
-
-# Copy BusyBox
-if ! command -v busybox &>/dev/null; then
-  echo "Error: busybox not installed. Run: sudo apt install busybox"
-  exit 1
-fi
-cp "$(command -v busybox)" "$INITRAMFS_DIR/bin/"
-
-# Create minimal /init script
-cat > "$INITRAMFS_DIR/init" <<'EOF'
-#!/bin/sh
-mount -t proc none /proc
-mount -t sysfs none /sys
-echo "Booting from initramfs..."
-
-# Initialize simple device manager (mdev)
-echo /sbin/mdev > /proc/sys/kernel/hotplug
-mdev -s
-
-# Wait until /dev/vda (virtio disk) appears
-echo "Waiting for /dev/vda to appear..."
-for i in $(seq 1 10); do
-    if [ -b /dev/vda ] || [ -b /dev/vda1 ]; then
-        echo "Detected virtio block device."
-        break
-    fi
-    sleep 1
-    mdev -s
-done
-
-echo "Available block devices:"
-ls /dev
-
-
-# Try both /dev/vda1 and /dev/vda (raw image)
-if [ -b /dev/vda1 ]; then
-    DEV=/dev/vda1
-elif [ -b /dev/vda ]; then
-    DEV=/dev/vda
-else
-    echo "Error: No /dev/vda or /dev/vda1 found!"
-    ls -l /dev
-    exec /bin/sh
-fi
-
-echo "Mounting root filesystem from $DEV..."
-if ! mount -t ext4 "$DEV" /newroot; then
-    echo "Mount failed for $DEV — trying read/write and debug:"
-    mount -t ext4 -o rw "$DEV" /newroot || {
-        echo "Still failed. Listing block devices:"
-        lsblk || ls /dev
-        exec /bin/sh
-    }
-fi
-
-echo "Switching to real root filesystem..."
-exec switch_root /newroot /sbin/init || {
-    echo "switch_root failed!"
-    exec /bin/sh
-}
-
-EOF
-chmod +x "$INITRAMFS_DIR/init"
-
-
-# Create initramfs_list.txt
-cat > "$INITRAMFS_LIST" <<EOF
-dir /dev 755 0 0
-dir /proc 755 0 0
-dir /sys 755 0 0
-dir /bin 755 0 0
-dir /sbin 755 0 0
-dir /etc 755 0 0
-dir /newroot 755 0 0
-file /init ${INITRAMFS_DIR}/init 755 0 0
-file /bin/busybox ${INITRAMFS_DIR}/bin/busybox 755 0 0
-slink /bin/sh /bin/busybox 777 0 0
-slink /sbin/mount /bin/busybox 777 0 0
-slink /sbin/switch_root /bin/busybox 777 0 0
-slink /sbin/mdev /bin/busybox 777 0 0
-EOF
-
-# Generate CPIO archive (newc format, gzip compressed)
-cd "$BOOT_DIR"
-if ! command -v gen_init_cpio &>/dev/null; then
-  echo "Error: gen_init_cpio not found."
-  echo "You can build it from Linux kernel source via:"
-  echo "  make -C ~/linux-6.6 usr/gen_init_cpio"
-  exit 1
-fi
-
-gen_init_cpio "$INITRAMFS_LIST" | gzip -9 > "$INITRAMFS_IMG"
-echo "Initramfs image created: $INITRAMFS_IMG"
-
-# --- Sign initramfs ---
-openssl dgst -sha256 -sign "${BOOT_DIR}/bl_private.pem" \
-  -out "${INITRAMFS_IMG}.sig" \
-  "$INITRAMFS_IMG"
-
-echo "Initramfs signed successfully."
+# --- Build initramfs using external script ---
+export ROOT_DIR BOOT_DIR KEYS_DIR
+bash "${ROOT_DIR}/build/initramfs.sh"
 
 
 # --- Package rootfs into ext4 image ---
+
 echo "Packaging rootfs into ext4 image..."
 dd if=/dev/zero of="$ROOTFS_IMG" bs=1M count=512
 mkfs.ext4 -F "$ROOTFS_IMG"
@@ -337,27 +194,10 @@ openssl dgst -sha256 -sign "${BOOT_DIR}/bl_private.pem" \
   "$ROOTFS_IMG"
 cp "${BOOT_DIR}/rootfs.img.sig" "$DEST_PATH"
 
+# --- Generate dm-verity metadata using external script ---
+export ROOT_DIR BOOT_DIR ROOTFS_IMG
+bash "${ROOT_DIR}/build/verity.sh"
 
-# --- Create the dm-verity Hash Image ---
-echo "[9/10] Creating dm-verity hash image (rootfs_verity.img)..."
-
-# This command uses rootfs.img as the data source (it is NOT modified)
-# and writes the hash tree to rootfs_verity.img.
-sudo veritysetup format "$ROOTFS_IMG" "${BOOT_DIR}/rootfs_verity.img" \
-  --data-block-size=4096 \
-  --hash-block-size=4096 \
-  --hash=sha256 \
-  --uuid="$(uuidgen)" | tee "${BOOT_DIR}/verity_info.txt"
-
-# Store the path to the original location on the Windows filesystem
-DEST_PATH="/mnt/d/Team-Project-2025/src/boot"
-
-# Copy all three generated artifacts back to the Windows path
-echo "Copying rootfs.img, rootfs_verity.img, and verity_info.txt to $DEST_PATH"
-cp "$ROOTFS_IMG" "$DEST_PATH/"
-cp "${BOOT_DIR}/rootfs_verity.img" "$DEST_PATH/"
-cp "${BOOT_DIR}/verity_info.txt" "$DEST_PATH/"
-# ----------------------------------------------------------------------
 
 # --- Launch in QEMU ---
 echo "[10/10] Launching Secure Boot Demo in QEMU..."
