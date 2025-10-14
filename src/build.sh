@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 echo "============================================"
 echo " Secure Boot Chain Build & Execution Script  "
@@ -10,6 +10,9 @@ echo "============================================"
 # ==========================================================
 echo "[0/10] Preparing clean workspace in Linux FS..."
 
+# Detect source directory (where build.sh lives)
+SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 cd ~
 # Safely delete previous TeamRoot, including mounted dirs, with root permissions
 if [ -d ~/TeamRoot ]; then
@@ -19,13 +22,11 @@ if [ -d ~/TeamRoot ]; then
 fi
 mkdir -p ~/TeamRoot
 
-# Copy core project files from Windows side into real Linux FS
-cp -r /mnt/c/Programming/Team-Project-2025/src/boot \
-      /mnt/c/Programming/Team-Project-2025/src/keys \
-      /mnt/c/Programming/Team-Project-2025/src/build \
-      /mnt/c/Programming/Team-Project-2025/src/build.sh \
-      /mnt/c/Programming/Team-Project-2025/src/run_build.sh \
-      ~/TeamRoot/ 2>/dev/null || true
+echo "Copying project files to ~/TeamRoot..."
+cp -r "${SRC_DIR}/boot" "${SRC_DIR}/keys" "${SRC_DIR}/build" ~/TeamRoot/
+
+# Copy top-level scripts
+cp "${SRC_DIR}/build.sh" "${SRC_DIR}/run_build.sh" ~/TeamRoot/
 
 chmod +x ~/TeamRoot/build/*.sh 2>/dev/null || true
 
@@ -44,7 +45,6 @@ ls
 #  SECURE BOOT BUILD PROCESS
 # ==========================================================
 
-# --- Detect and normalize paths ---
 ROOT_DIR="$(pwd)"
 BOOT_DIR="${ROOT_DIR}/boot"
 KEYS_DIR="${ROOT_DIR}/keys"
@@ -130,9 +130,7 @@ bash "${ROOT_DIR}/build/rootfs.sh"
 export ROOT_DIR BOOT_DIR KEYS_DIR
 bash "${ROOT_DIR}/build/initramfs.sh"
 
-
 # --- Package rootfs into ext4 image ---
-
 echo "Packaging rootfs into ext4 image..."
 dd if=/dev/zero of="$ROOTFS_IMG" bs=1M count=512
 mkfs.ext4 -F "$ROOTFS_IMG"
@@ -152,7 +150,6 @@ openssl dgst -sha256 -sign "${BOOT_DIR}/bl_private.pem" \
 # --- Generate dm-verity metadata using external script ---
 export ROOT_DIR BOOT_DIR ROOTFS_IMG
 bash "${ROOT_DIR}/build/verity.sh"
-
 
 # --- Launch in QEMU ---
 echo "[10/10] Launching Secure Boot Demo in QEMU..."

@@ -10,7 +10,10 @@ fi
 
 # --- ALWAYS configure users (even if rootfs already existed) ---
 echo "[8.1] Configuring users inside rootfs..."
+
+# Mount essential filesystems for chroot
 sudo mount --bind /dev  "$ROOTFS_DIR/dev"
+sudo mount --bind /dev/pts "$ROOTFS_DIR/dev/pts"
 sudo mount --bind /proc "$ROOTFS_DIR/proc"
 sudo mount --bind /sys  "$ROOTFS_DIR/sys"
 
@@ -25,21 +28,23 @@ sudo chroot "$ROOTFS_DIR" bash -c '
   echo "root:root" | chpasswd
   passwd -u root || true
 
-  # Create user "keti" with sudo
-  id -u keti &>/dev/null || useradd -m -s /bin/bash keti
+  # Create user "keti" with sudo access
+  if ! id -u keti &>/dev/null; then
+    useradd -m -s /bin/bash keti
+  fi
   echo "keti:keti" | chpasswd
   usermod -aG sudo keti
 
-  # Enable serial console login
+  # Enable serial console login (for QEMU)
   systemctl enable serial-getty@ttyS0.service || true
 
   apt-get clean
 '
 
-sudo umount "$ROOTFS_DIR/dev"  || true
-sudo umount "$ROOTFS_DIR/proc" || true
-sudo umount "$ROOTFS_DIR/sys"  || true
+# Clean unmount
+sudo umount "$ROOTFS_DIR/dev/pts" || true
+sudo umount "$ROOTFS_DIR/dev"     || true
+sudo umount "$ROOTFS_DIR/proc"    || true
+sudo umount "$ROOTFS_DIR/sys"     || true
 
 echo "User setup complete (root/root and keti/keti)"
-
-
