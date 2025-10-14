@@ -27,6 +27,7 @@ cp -r /mnt/c/Programming/Team-Project-2025/src/boot \
       /mnt/c/Programming/Team-Project-2025/src/run_build.sh \
       ~/TeamRoot/ 2>/dev/null || true
 
+chmod +x ~/TeamRoot/build/*.sh 2>/dev/null || true
 
 # Copy local kernel source if it exists
 if [ -d ~/linux-6.6 ]; then
@@ -121,61 +122,16 @@ openssl dgst -sha256 -sign "${BOOT_DIR}/bl_private.pem" \
 echo "[7/10] Generated files:"
 ls -lh "${BOOT_DIR}" | grep -E "bootloader|kernel|pem|sig" || true
 
-# --- Build minimal root filesystem (once) ---
-echo "[8/10] Building minimal root filesystem..."
-if [ ! -d "$ROOTFS_DIR" ]; then
-  sudo debootstrap --arch=amd64 bookworm "$ROOTFS_DIR" http://deb.debian.org/debian/
-  echo "RootFS created at $ROOTFS_DIR"
-fi
-
-# --- ALWAYS configure users (even if rootfs already existed) ---
-echo "[8.1] Configuring users inside rootfs..."
-sudo mount --bind /dev  "$ROOTFS_DIR/dev"
-sudo mount --bind /proc "$ROOTFS_DIR/proc"
-sudo mount --bind /sys  "$ROOTFS_DIR/sys"
-
-sudo chroot "$ROOTFS_DIR" bash -c "
-  set -e
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y passwd login sudo
-
-  # Unlock and set root password
-  passwd -d root || true
-  echo 'root:root' | chpasswd
-  passwd -u root || true
-
-  # Create user 'keti' with sudo
-  id -u keti &>/dev/null || useradd -m -s /bin/bash keti
-  echo 'keti:keti' | chpasswd
-  usermod -aG sudo keti
-
-  # Enable serial console login
-  systemctl enable serial-getty@ttyS0.service || true
-
-  apt-get clean
-"
-
-sudo umount "$ROOTFS_DIR/dev"  || true
-sudo umount "$ROOTFS_DIR/proc" || true
-sudo umount "$ROOTFS_DIR/sys"  || true
-
-echo "User setup complete (root/root and keti/keti)"
-
-
-
+# --- Build and configure root filesystem using external script ---
+export ROOT_DIR BOOT_DIR KEYS_DIR ROOTFS_DIR
+bash "${ROOT_DIR}/build/rootfs.sh"
 
 # --- Build initramfs using external script ---
 export ROOT_DIR BOOT_DIR KEYS_DIR
 bash "${ROOT_DIR}/build/initramfs.sh"
 
 
-
-
-
-
 # --- Package rootfs into ext4 image ---
-
 
 echo "Packaging rootfs into ext4 image..."
 dd if=/dev/zero of="$ROOTFS_IMG" bs=1M count=512
@@ -192,6 +148,11 @@ echo "[9/10] Signing rootfs image..."
 openssl dgst -sha256 -sign "${BOOT_DIR}/bl_private.pem" \
   -out "${BOOT_DIR}/rootfs.img.sig" \
   "$ROOTFS_IMG"
+
+# --- Generate dm-verity metadata using external script ---
+export ROOT_DIR BOOT_DIR ROOTFS_IMG
+bash "${ROOT_DIR}/build/verity.sh"
+
 
 # --- Launch in QEMU ---
 echo "[10/10] Launching Secure Boot Demo in QEMU..."
