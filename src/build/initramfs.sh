@@ -3,7 +3,7 @@ set -e
 
 # Expect ROOT_DIR, BOOT_DIR, and KEYS_DIR to already be set by the caller (build.sh)
 
-# --- Build initramfs using gen_init_cpio ---
+# --- Prerequirements (Build initramfs using gen_init_cpio) ---
 echo "[8.2] Building initramfs using gen_init_cpio..."
 
 INITRAMFS_DIR="${BOOT_DIR}/initramfs"
@@ -12,6 +12,7 @@ INITRAMFS_IMG="${BOOT_DIR}/initramfs.cpio.gz"
 
 # Clean and recreate
 sudo rm -rf "$INITRAMFS_DIR"
+echo "INITRAMFS_DIR Succesfully deleted"                          #Later to be removed
 mkdir -p "$INITRAMFS_DIR"/{bin,sbin,etc,proc,sys,dev,newroot}
 
 # Copy BusyBox
@@ -32,36 +33,35 @@ echo "Booting from initramfs..."
 echo /sbin/mdev > /proc/sys/kernel/hotplug
 mdev -s
 
-# Wait until /dev/vda (virtio disk) appears
-echo "Waiting for /dev/vda to appear..."
+# Parse root device from kernel cmdline
+ROOTDEV=$(grep -o 'root=[^ ]*' /proc/cmdline | cut -d= -f2)
+
+if [ -z "$ROOTDEV" ]; then
+    echo "Error: No root= argument found in /proc/cmdline!"
+    echo "cmdline was: $(cat /proc/cmdline)"
+    exec /bin/sh
+fi
+
+echo "Waiting for root device: $ROOTDEV ..."
 for i in $(seq 1 10); do
-    if [ -b /dev/vda ] || [ -b /dev/vda1 ]; then
-        echo "Detected virtio block device."
+    if [ -b "$ROOTDEV" ]; then
+        echo "Found root device: $ROOTDEV"
         break
     fi
     sleep 1
     mdev -s
 done
 
-echo "Available block devices:"
-ls /dev
-
-
-# Try both /dev/vda1 and /dev/vda (raw image)
-if [ -b /dev/vda1 ]; then
-    DEV=/dev/vda1
-elif [ -b /dev/vda ]; then
-    DEV=/dev/vda
-else
-    echo "Error: No /dev/vda or /dev/vda1 found!"
+if [ ! -b "$ROOTDEV" ]; then
+    echo "Error: Root device $ROOTDEV not found!"
     ls -l /dev
     exec /bin/sh
 fi
 
-echo "Mounting root filesystem from $DEV..."
-if ! mount -t ext4 "$DEV" /newroot; then
-    echo "Mount failed for $DEV — trying read/write and debug:"
-    mount -t ext4 -o rw "$DEV" /newroot || {
+echo "Mounting root filesystem from $ROOTDEV ..."
+if ! mount -t ext4 "$ROOTDEV" /newroot; then
+    echo "Mount failed for $ROOTDEV — trying read/write and debug:"
+    mount -t ext4 -o rw "$ROOTDEV" /newroot || {
         echo "Still failed. Listing block devices:"
         lsblk || ls /dev
         exec /bin/sh
@@ -73,7 +73,6 @@ exec switch_root /newroot /sbin/init || {
     echo "switch_root failed!"
     exec /bin/sh
 }
-
 EOF
 chmod +x "$INITRAMFS_DIR/init"
 
@@ -113,6 +112,3 @@ openssl dgst -sha256 -sign "${BOOT_DIR}/bl_private.pem" \
   "$INITRAMFS_IMG"
 
 echo "Initramfs signed successfully."
-
-
-

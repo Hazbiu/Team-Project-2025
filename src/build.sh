@@ -158,5 +158,5 @@ qemu-system-x86_64 \
   -kernel "${BOOT_DIR}/kernel_image.bin" \
   -initrd "${BOOT_DIR}/initramfs.cpio.gz" \
   -drive file="${ROOTFS_IMG}",format=raw,if=virtio \
-  -append "root=/dev/vda rw console=ttyS0" \
+  -append "root=/dev/vda34 rw console=ttyS0" \
   -nographic
