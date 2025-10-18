@@ -52,10 +52,15 @@ WORKSPACE="/workspace"
 ROOTFS_DIR="${ROOT_DIR}/rootfs"
 ROOTFS_IMG="${BOOT_DIR}/rootfs.img"
 
+# --- FLEXIBLE ROOT DEVICE SETTINGS ---
+ROOT_PARTNUM=${ROOT_PARTNUM:-1}     # default partition number
+ROOT_DEV_BASE=${ROOT_DEV_BASE:-vda} # default disk name
+
 echo
 echo "[1/10] Using project root: $ROOT_DIR"
 echo "[1/10] Boot directory:     $BOOT_DIR"
 echo "[1/10] Keys directory:     $KEYS_DIR"
+echo "[1/10] Root device:        /dev/${ROOT_DEV_BASE}${ROOT_PARTNUM}"
 echo ""
 
 # --- Safety check: avoid Windows-mounted paths (/mnt/...) ---
@@ -66,10 +71,10 @@ if [[ "$ROOT_DIR" == /mnt/* ]]; then
 fi
 
 # --- Check dependencies ---
-for cmd in gcc openssl qemu-system-x86_64 debootstrap; do
+for cmd in gcc openssl qemu-system-x86_64 debootstrap parted; do
   if ! command -v "$cmd" &>/dev/null; then
     echo "Error: '$cmd' not found. Install with:"
-    echo "  sudo apt install -y build-essential qemu-system-x86 openssl debootstrap"
+    echo "  sudo apt install -y build-essential qemu-system-x86 openssl debootstrap parted"
     exit 1
   fi
 done
@@ -130,16 +135,34 @@ bash "${ROOT_DIR}/build/rootfs.sh"
 export ROOT_DIR BOOT_DIR KEYS_DIR
 bash "${ROOT_DIR}/build/initramfs.sh"
 
-# --- Package rootfs into ext4 image ---
-echo "Packaging rootfs into ext4 image..."
-dd if=/dev/zero of="$ROOTFS_IMG" bs=1M count=512
-mkfs.ext4 -F "$ROOTFS_IMG"
+# --- Package rootfs into ext4 image (flexible partition) ---
+echo "[8/10] Packaging rootfs into ext4 image (partition ${ROOT_DEV_BASE}${ROOT_PARTNUM})..."
+IMG_MB=512
+dd if=/dev/zero of="$ROOTFS_IMG" bs=1M count=$IMG_MB
+
+parted -s "$ROOTFS_IMG" mklabel msdos
+
+# Create dummy partitions up to the desired partition number
+for ((i=1; i<ROOT_PARTNUM; i++)); do
+  start=$((1 + (i-1)*2))
+  end=$((start + 1))
+  parted -s "$ROOTFS_IMG" mkpart primary ext4 "${start}MiB" "${end}MiB"
+done
+
+# Real root partition filling the rest
+parted -s "$ROOTFS_IMG" mkpart primary ext4 "$((ROOT_PARTNUM*2))MiB" 100%
+
+# Attach loop device and format root partition
+LOOP=$(sudo losetup -f --show -P "$ROOTFS_IMG")
+sudo mkfs.ext4 -F "${LOOP}p${ROOT_PARTNUM}"
 
 sudo mkdir -p /mnt/rootfs_build
-sudo mount -o loop "$ROOTFS_IMG" /mnt/rootfs_build
+sudo mount "${LOOP}p${ROOT_PARTNUM}" /mnt/rootfs_build
 sudo cp -a "$ROOTFS_DIR"/* /mnt/rootfs_build
 sudo umount /mnt/rootfs_build
-echo "RootFS image ready at $ROOTFS_IMG"
+sudo losetup -d "$LOOP"
+
+echo "RootFS image ready at $ROOTFS_IMG (root partition ${ROOT_DEV_BASE}${ROOT_PARTNUM})"
 
 # --- Sign the rootfs image ---
 echo "[9/10] Signing rootfs image..."
@@ -158,5 +181,5 @@ qemu-system-x86_64 \
   -kernel "${BOOT_DIR}/kernel_image.bin" \
   -initrd "${BOOT_DIR}/initramfs.cpio.gz" \
   -drive file="${ROOTFS_IMG}",format=raw,if=virtio \
-  -append "root=/dev/vda34 rw console=ttyS0" \
+  -append "root=/dev/${ROOT_DEV_BASE}${ROOT_PARTNUM} rw console=ttyS0" \
   -nographic
