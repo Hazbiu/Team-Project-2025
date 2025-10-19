@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <stdarg.h>
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -25,8 +26,8 @@ static const char *INITRD_IMG   = "initramfs.cpio.gz";    // build.sh outputs th
 static const char *INITRD_SIG   = "rootfs.cpio.gz.sig";   // signature for initramfs
 static const char *ROOTFS_IMG   = "rootfs.img";
 static const char *ROOTFS_SIG   = "rootfs.img.sig";
-static const char *VERITY_META  = "rootfs.verity";
-static const char *VERITY_SIG   = "rootfs.verity.sig";
+static const char *VERITY_META  = "rootfs.verity.meta";
+static const char *VERITY_SIG   = "rootfs.verity.meta.sig";
 
 static void die(const char *fmt, ...) __attribute__((noreturn, format(printf,1,2)));
 static void die(const char *fmt, ...) {
@@ -178,42 +179,41 @@ static int gpt_find_rootfs_partition(const char *img_path) {
     return 0;
 }
 
-// ---------- Very small parser for roothash=HEX in rootfs.verity ----------
-static int parse_roothash(const char *path, char *out, size_t outlen) {
+// ---------- Metadata parser (roothash, salt, offset) ----------
+typedef struct {
+    char roothash[129];
+    char salt[129];
+    unsigned long long offset;
+} VerityMeta;
+
+static int parse_verity_metadata(const char *path, VerityMeta *out) {
     FILE *f = fopen(path, "r"); if (!f) return 0;
-    char line[512]; int ok = 0;
-    while (fgets(line, sizeof line, f)) {
-        char *eq = strchr(line, '=');
-        if (!eq) continue;
-        *eq = 0;
-        char *k = line, *v = eq + 1;
-        while (*k == ' ' || *k == '\t') ++k;
-        while (*v == ' ' || *v == '\t') ++v;
-        size_t n = strcspn(v, "\r\n\t ");
-        if (strcmp(k, "roothash") == 0 && n > 0 && n < outlen) {
-            memcpy(out, v, n);
-            out[n] = 0;
-            ok = 1;
-            break;
-        }
+    char key[64], val[256];
+    while (fscanf(f, "%63[^=]=%255s\n", key, val) == 2) {
+        if (strcmp(key, "roothash") == 0)
+            strncpy(out->roothash, val, sizeof(out->roothash)-1);
+        else if (strcmp(key, "salt") == 0)
+            strncpy(out->salt, val, sizeof(out->salt)-1);
+        else if (strcmp(key, "offset") == 0)
+            out->offset = strtoull(val, NULL, 10);
     }
     fclose(f);
-    return ok;
+    return out->roothash[0] != 0;
 }
 
 // ---------- QEMU launcher (no shell) ----------
 static int boot_qemu(const char *kernel, const char *initrd, const char *rootfs_img,
-                     const char *root_dev, const char *roothash_opt) {
+                     const char *root_dev, const VerityMeta *meta) {
     // Build -drive arg
     char drive[256];
     snprintf(drive, sizeof drive, "file=%s,format=raw,if=virtio,readonly=on", rootfs_img);
 
     // Build -append cmdline
     char append[768];
-    if (roothash_opt && roothash_opt[0]) {
+    if (meta && meta->roothash[0]) {
         snprintf(append, sizeof append,
-                 "console=ttyS0 rdinit=/init root=%s ro verity=1 roothash=%s verity.hash_alg=sha256",
-                 root_dev, roothash_opt);
+                 "console=ttyS0 rdinit=/init root=%s ro verity=1 verity.hash_alg=sha256 roothash=%s verity.salt=%s verity.hashstart=%llu",
+                 root_dev, meta->roothash, meta->salt, meta->offset);
     } else {
         snprintf(append, sizeof append,
                  "console=ttyS0 rdinit=/init root=%s ro verity=1",
@@ -284,11 +284,16 @@ int main(void) {
         printf("No GPT 'rootfs' label detected; using %s\n", root_dev);
     }
 
-    // 3) Optionally parse roothash from verity metadata
-    char roothash[129] = {0};
-    int have_rh = parse_roothash(VERITY_META, roothash, sizeof roothash);
-    if (have_rh) printf("Found roothash in metadata.\n");
-    else         printf("No roothash found; proceeding without it.\n");
+    // 3) Parse metadata (roothash, salt, offset)
+    VerityMeta meta = {0};
+    if (parse_verity_metadata(VERITY_META, &meta)) {
+        printf("Found metadata:\n");
+        printf("  roothash: %s\n", meta.roothash);
+        printf("  salt:     %s\n", meta.salt);
+        printf("  offset:   %llu\n", meta.offset);
+    } else {
+        printf("No metadata found; proceeding without it.\n");
+    }
 
     // 4) Boot
     printf("\nAll artifacts verified. Ready to boot.\n");
@@ -296,7 +301,7 @@ int main(void) {
     fflush(stdout);
     (void)getchar();
 
-    int rc = boot_qemu(KERNEL_IMG, INITRD_IMG, ROOTFS_IMG, root_dev, have_rh ? roothash : NULL);
+    int rc = boot_qemu(KERNEL_IMG, INITRD_IMG, ROOTFS_IMG, root_dev, &meta);
     printf("QEMU exited with status %d\n", rc);
 
     // Cleanup (optional with modern OpenSSL)
