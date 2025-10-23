@@ -1,7 +1,7 @@
 obj-m := rootfs_verifier.o
 
-# path to the parent kernel source
-KDIR := ..
+# Use the real kernel tree path (adjust if needed)
+KDIR := /home/hazbiu/Team-Project-2025/linux
 PWD  := $(shell pwd)
 
 all:
@@ -9,3 +9,4 @@ all:
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
+
