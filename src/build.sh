@@ -165,7 +165,6 @@ LOOP=$(sudo losetup -f --show -P "$ROOTFS_IMG")
 # Make filesystem slightly smaller to leave room for dm-verity tree (~8 MB)
 FS_SIZE_MB=$((IMG_MB - 24))
 
-
 echo "Creating ext4 filesystem (${FS_SIZE_MB}MB data area + ${IMG_MB}MB total image)..."
 
 # Create filesystem normally
@@ -190,6 +189,25 @@ openssl dgst -sha256 -sign "${BOOT_DIR}/bl_private.pem" \
   -out "${BOOT_DIR}/rootfs.img.sig" \
   "$ROOTFS_IMG"
 
+# --- Generate PKCS#7-signed metadata for dm-verity-signed ---
+echo "[9.1] Creating PKCS#7 signature for verity metadata..."
+
+META_FILE="${BOOT_DIR}/verity_metadata.txt"
+echo "dm-verity metadata root hash, salt, etc. placeholder" > "$META_FILE"
+
+if [ ! -f "${BOOT_DIR}/bl_cert.pem" ]; then
+  openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+    -keyout "${BOOT_DIR}/bl_private.pem" \
+    -out "${BOOT_DIR}/bl_cert.pem" \
+    -subj "/CN=verity-signed/"
+fi
+
+openssl smime -sign -binary -in "$META_FILE" \
+  -signer "${BOOT_DIR}/bl_cert.pem" -inkey "${BOOT_DIR}/bl_private.pem" \
+  -noattr -outform DER -out "${BOOT_DIR}/verity_metadata.p7s"
+
+echo "PKCS#7 metadata signature created at ${BOOT_DIR}/verity_metadata.p7s"
+
 # --- Generate dm-verity metadata using external script ---
 export ROOT_DIR BOOT_DIR ROOTFS_IMG
 bash "${ROOT_DIR}/build/verity.sh"
@@ -197,13 +215,17 @@ read -p "Step 9 complete. Press ENTER to continue to step 10..."
 
 # --- Launch in QEMU ---
 echo "[10/10] Launching Secure Boot Demo in QEMU..."
-# Extract metadata info for dm-verity
 META_FILE="${BOOT_DIR}/rootfs.verity.meta"
 ROOTHASH=$(grep '^roothash=' "$META_FILE" | cut -d= -f2)
 SALT=$(grep '^salt=' "$META_FILE" | cut -d= -f2)
 OFFSET=$(grep '^offset=' "$META_FILE" | cut -d= -f2)
 
 echo "[10/10] Launching Secure Boot Demo in QEMU with dm-verity..."
+
+# --- Commented out problematic /mnt/d usage ---
+# mkdir /mnt/d
+# cp something to /mnt/d  # <— remove or comment any /mnt/d lines if they existed
+
 qemu-system-x86_64 \
   -m 1024 \
   -kernel "${BOOT_DIR}/kernel_image.bin" \
