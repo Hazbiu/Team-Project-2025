@@ -48,3 +48,9 @@ sudo umount "$ROOTFS_DIR/proc"    || true
 sudo umount "$ROOTFS_DIR/sys"     || true
 
 echo "User setup complete (root/root and keti/keti)"
+
+# --- Commented out potential /mnt/d sync logic (Windows mount path) ---
+# DEST_PATH="/mnt/d/Team-Project-2025/src/rootfs"
+# mkdir -p "$DEST_PATH"
+# cp -r "$ROOTFS_DIR"/* "$DEST_PATH/" 2>/dev/null || true
+# echo "RootFS copied to Windows mount: $DEST_PATH"

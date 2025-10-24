@@ -121,3 +121,9 @@ openssl dgst -sha256 -sign "${BOOT_DIR}/bl_private.pem" \
   "$INITRAMFS_IMG"
 
 echo "Initramfs signed successfully."
+
+# --- Commented out Windows /mnt/d sync (future safety) ---
+# DEST_PATH="/mnt/d/Team-Project-2025/src/boot"
+# mkdir -p "$DEST_PATH"
+# cp -f "$INITRAMFS_IMG" "$INITRAMFS_IMG.sig" "$DEST_PATH/" 2>/dev/null || true
+# echo "Initramfs copied to Windows mount: $DEST_PATH"

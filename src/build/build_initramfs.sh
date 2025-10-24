@@ -35,3 +35,9 @@ qemu-system-x86_64 \
   -drive file="$ROOTFS_IMG",format=raw,if=virtio \
   -append "root=/dev/vda3 rw console=ttyS0" \
   -nographic | tee "$BOOT_DIR/boot_test.log"
+
+# --- Commented-out /mnt/d sync (for safety) ---
+# DEST_PATH="/mnt/d/Team-Project-2025/src/boot"
+# mkdir -p "$DEST_PATH"
+# cp -f "$OUT_GZ" "$BOOT_DIR/boot_test.log" "$DEST_PATH/" 2>/dev/null || true
+# echo "Copied new initramfs and log to Windows path: $DEST_PATH"
