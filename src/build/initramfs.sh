@@ -22,6 +22,15 @@ if ! command -v busybox &>/dev/null; then
 fi
 cp "$(command -v busybox)" "$INITRAMFS_DIR/bin/"
 
+# Add dmsetup and veritysetup if available
+if command -v dmsetup &>/dev/null; then
+  cp "$(command -v dmsetup)" "$INITRAMFS_DIR/sbin/"
+fi
+if command -v veritysetup &>/dev/null; then
+  cp "$(command -v veritysetup)" "$INITRAMFS_DIR/sbin/"
+fi
+
+
 # Create minimal /init script
 cat > "$INITRAMFS_DIR/init" <<'EOF'
 #!/bin/sh

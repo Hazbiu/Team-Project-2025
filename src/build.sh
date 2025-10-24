@@ -197,10 +197,17 @@ read -p "Step 9 complete. Press ENTER to continue to step 10..."
 
 # --- Launch in QEMU ---
 echo "[10/10] Launching Secure Boot Demo in QEMU..."
+# Extract metadata info for dm-verity
+META_FILE="${BOOT_DIR}/rootfs.verity.meta"
+ROOTHASH=$(grep '^roothash=' "$META_FILE" | cut -d= -f2)
+SALT=$(grep '^salt=' "$META_FILE" | cut -d= -f2)
+OFFSET=$(grep '^offset=' "$META_FILE" | cut -d= -f2)
+
+echo "[10/10] Launching Secure Boot Demo in QEMU with dm-verity..."
 qemu-system-x86_64 \
   -m 1024 \
   -kernel "${BOOT_DIR}/kernel_image.bin" \
   -initrd "${BOOT_DIR}/initramfs.cpio.gz" \
   -drive file="${ROOTFS_IMG}",format=raw,if=virtio \
-  -append "root=/dev/${ROOT_DEV_BASE}${ROOT_PARTNUM} rw console=ttyS0" \
+  -append "console=ttyS0 root=/dev/mapper/verity-root ro dm-mod.create=\"verity-root,,,ro,0 ${OFFSET} verity-signed /dev/vda1 ${ROOTHASH} ${SALT}\"" \
   -nographic
