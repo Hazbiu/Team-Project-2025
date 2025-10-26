@@ -18,10 +18,17 @@
 #include "dm-verity-verify-sig.h"
 #include "dm-audit.h"
 #include <linux/module.h>
+#include <linux/device-mapper.h>
+#include "dm.h"
+#include "dm-verity.h"
 #include <linux/reboot.h>
 #include <linux/string.h>
 #include <linux/jump_label.h>
 #include <linux/security.h>
+
+#ifndef KBUILD_MODNAME
+#define KBUILD_MODNAME "dm_verity_signed"
+#endif
 
 #define DM_MSG_PREFIX			"verity"
 
@@ -80,6 +87,12 @@ struct dm_verity_prefetch_work {
  * and write 1 to hash_verified simultaneously.
  * This condition is harmless, so we don't need locking.
  */
+
+
+static int verity_signed_ctr(struct dm_target *ti, unsigned int argc, char **argv);
+
+
+
 struct buffer_aux {
 	int hash_verified;
 };
@@ -711,247 +724,25 @@ static void verity_submit_prefetch(struct dm_verity *v, struct dm_verity_io *io,
  * Bio map function. It allocates dm_verity_io structure and bio vector and
  * fills them. Then it issues prefetches and the I/O.
  */
-static int verity_map(struct dm_target *ti, struct bio *bio)
-{
-	struct dm_verity *v = ti->private;
-	struct dm_verity_io *io;
+extern int verity_map(struct dm_target *ti, struct bio *bio);
 
-	bio_set_dev(bio, v->data_dev->bdev);
-	bio->bi_iter.bi_sector = verity_map_sector(v, bio->bi_iter.bi_sector);
+extern void verity_postsuspend(struct dm_target *ti);
 
-	if (((unsigned int)bio->bi_iter.bi_sector | bio_sectors(bio)) &
-	    ((1 << (v->data_dev_block_bits - SECTOR_SHIFT)) - 1)) {
-		DMERR_LIMIT("unaligned io");
-		return DM_MAPIO_KILL;
-	}
-
-	if (bio_end_sector(bio) >>
-	    (v->data_dev_block_bits - SECTOR_SHIFT) > v->data_blocks) {
-		DMERR_LIMIT("io out of range");
-		return DM_MAPIO_KILL;
-	}
-
-	if (bio_data_dir(bio) == WRITE)
-		return DM_MAPIO_KILL;
-
-	io = dm_per_bio_data(bio, ti->per_io_data_size);
-	io->v = v;
-	io->orig_bi_end_io = bio->bi_end_io;
-	io->block = bio->bi_iter.bi_sector >> (v->data_dev_block_bits - SECTOR_SHIFT);
-	io->n_blocks = bio->bi_iter.bi_size >> v->data_dev_block_bits;
-	io->had_mismatch = false;
-
-	bio->bi_end_io = verity_end_io;
-	bio->bi_private = io;
-	io->iter = bio->bi_iter;
-
-	verity_fec_init_io(io);
-
-	verity_submit_prefetch(v, io, bio->bi_ioprio);
-
-	submit_bio_noacct(bio);
-
-	return DM_MAPIO_SUBMITTED;
-}
-
-static void verity_postsuspend(struct dm_target *ti)
-{
-	struct dm_verity *v = ti->private;
-	flush_workqueue(v->verify_wq);
-	dm_bufio_client_reset(v->bufio);
-}
 
 /*
  * Status: V (valid) or C (corruption found)
  */
-static void verity_status(struct dm_target *ti, status_type_t type,
-			  unsigned int status_flags, char *result, unsigned int maxlen)
-{
-	struct dm_verity *v = ti->private;
-	unsigned int args = 0;
-	unsigned int sz = 0;
-	unsigned int x;
+extern void verity_status(struct dm_target *ti, status_type_t type,
+			  unsigned int status_flags, char *result, unsigned int maxlen);
 
-	switch (type) {
-	case STATUSTYPE_INFO:
-		DMEMIT("%c", v->hash_failed ? 'C' : 'V');
-		break;
-	case STATUSTYPE_TABLE:
-		DMEMIT("%u %s %s %u %u %llu %llu %s ",
-			v->version,
-			v->data_dev->name,
-			v->hash_dev->name,
-			1 << v->data_dev_block_bits,
-			1 << v->hash_dev_block_bits,
-			(unsigned long long)v->data_blocks,
-			(unsigned long long)v->hash_start,
-			v->alg_name
-			);
-		for (x = 0; x < v->digest_size; x++)
-			DMEMIT("%02x", v->root_digest[x]);
-		DMEMIT(" ");
-		if (!v->salt_size)
-			DMEMIT("-");
-		else
-			for (x = 0; x < v->salt_size; x++)
-				DMEMIT("%02x", v->salt[x]);
-		if (v->mode != DM_VERITY_MODE_EIO)
-			args++;
-		if (v->error_mode != DM_VERITY_MODE_EIO)
-			args++;
-		if (verity_fec_is_enabled(v))
-			args += DM_VERITY_OPTS_FEC;
-		if (v->zero_digest)
-			args++;
-		if (v->validated_blocks)
-			args++;
-		if (v->use_bh_wq)
-			args++;
-		if (v->signature_key_desc)
-			args += DM_VERITY_ROOT_HASH_VERIFICATION_OPTS;
-		if (!args)
-			return;
-		DMEMIT(" %u", args);
-		if (v->mode != DM_VERITY_MODE_EIO) {
-			DMEMIT(" ");
-			switch (v->mode) {
-			case DM_VERITY_MODE_LOGGING:
-				DMEMIT(DM_VERITY_OPT_LOGGING);
-				break;
-			case DM_VERITY_MODE_RESTART:
-				DMEMIT(DM_VERITY_OPT_RESTART);
-				break;
-			case DM_VERITY_MODE_PANIC:
-				DMEMIT(DM_VERITY_OPT_PANIC);
-				break;
-			default:
-				BUG();
-			}
-		}
-		if (v->error_mode != DM_VERITY_MODE_EIO) {
-			DMEMIT(" ");
-			switch (v->error_mode) {
-			case DM_VERITY_MODE_RESTART:
-				DMEMIT(DM_VERITY_OPT_ERROR_RESTART);
-				break;
-			case DM_VERITY_MODE_PANIC:
-				DMEMIT(DM_VERITY_OPT_ERROR_PANIC);
-				break;
-			default:
-				BUG();
-			}
-		}
-		if (v->zero_digest)
-			DMEMIT(" " DM_VERITY_OPT_IGN_ZEROES);
-		if (v->validated_blocks)
-			DMEMIT(" " DM_VERITY_OPT_AT_MOST_ONCE);
-		if (v->use_bh_wq)
-			DMEMIT(" " DM_VERITY_OPT_TASKLET_VERIFY);
-		sz = verity_fec_status_table(v, sz, result, maxlen);
-		if (v->signature_key_desc)
-			DMEMIT(" " DM_VERITY_ROOT_HASH_VERIFICATION_OPT_SIG_KEY
-				" %s", v->signature_key_desc);
-		break;
-
-	case STATUSTYPE_IMA:
-		DMEMIT_TARGET_NAME_VERSION(ti->type);
-		DMEMIT(",hash_failed=%c", v->hash_failed ? 'C' : 'V');
-		DMEMIT(",verity_version=%u", v->version);
-		DMEMIT(",data_device_name=%s", v->data_dev->name);
-		DMEMIT(",hash_device_name=%s", v->hash_dev->name);
-		DMEMIT(",verity_algorithm=%s", v->alg_name);
-
-		DMEMIT(",root_digest=");
-		for (x = 0; x < v->digest_size; x++)
-			DMEMIT("%02x", v->root_digest[x]);
-
-		DMEMIT(",salt=");
-		if (!v->salt_size)
-			DMEMIT("-");
-		else
-			for (x = 0; x < v->salt_size; x++)
-				DMEMIT("%02x", v->salt[x]);
-
-		DMEMIT(",ignore_zero_blocks=%c", v->zero_digest ? 'y' : 'n');
-		DMEMIT(",check_at_most_once=%c", v->validated_blocks ? 'y' : 'n');
-		if (v->signature_key_desc)
-			DMEMIT(",root_hash_sig_key_desc=%s", v->signature_key_desc);
-
-		if (v->mode != DM_VERITY_MODE_EIO) {
-			DMEMIT(",verity_mode=");
-			switch (v->mode) {
-			case DM_VERITY_MODE_LOGGING:
-				DMEMIT(DM_VERITY_OPT_LOGGING);
-				break;
-			case DM_VERITY_MODE_RESTART:
-				DMEMIT(DM_VERITY_OPT_RESTART);
-				break;
-			case DM_VERITY_MODE_PANIC:
-				DMEMIT(DM_VERITY_OPT_PANIC);
-				break;
-			default:
-				DMEMIT("invalid");
-			}
-		}
-		if (v->error_mode != DM_VERITY_MODE_EIO) {
-			DMEMIT(",verity_error_mode=");
-			switch (v->error_mode) {
-			case DM_VERITY_MODE_RESTART:
-				DMEMIT(DM_VERITY_OPT_ERROR_RESTART);
-				break;
-			case DM_VERITY_MODE_PANIC:
-				DMEMIT(DM_VERITY_OPT_ERROR_PANIC);
-				break;
-			default:
-				DMEMIT("invalid");
-			}
-		}
-		DMEMIT(";");
-		break;
-	}
-}
-
-static int verity_prepare_ioctl(struct dm_target *ti, struct block_device **bdev,
+extern int verity_prepare_ioctl(struct dm_target *ti, struct block_device **bdev,
 				unsigned int cmd, unsigned long arg,
-				bool *forward)
-{
-	struct dm_verity *v = ti->private;
+				bool *forward);
 
-	*bdev = v->data_dev->bdev;
+extern int verity_iterate_devices(struct dm_target *ti,
+				  iterate_devices_callout_fn fn, void *data);
 
-	if (ti->len != bdev_nr_sectors(v->data_dev->bdev))
-		return 1;
-	return 0;
-}
-
-static int verity_iterate_devices(struct dm_target *ti,
-				  iterate_devices_callout_fn fn, void *data)
-{
-	struct dm_verity *v = ti->private;
-
-	return fn(ti, v->data_dev, 0, ti->len, data);
-}
-
-static void verity_io_hints(struct dm_target *ti, struct queue_limits *limits)
-{
-	struct dm_verity *v = ti->private;
-
-	if (limits->logical_block_size < 1 << v->data_dev_block_bits)
-		limits->logical_block_size = 1 << v->data_dev_block_bits;
-
-	if (limits->physical_block_size < 1 << v->data_dev_block_bits)
-		limits->physical_block_size = 1 << v->data_dev_block_bits;
-
-	limits->io_min = limits->logical_block_size;
-
-	/*
-	 * Similar to what dm-crypt does, opt dm-verity out of support for
-	 * direct I/O that is aligned to less than the traditional direct I/O
-	 * alignment requirement of logical_block_size.  This prevents dm-verity
-	 * data blocks from crossing pages, eliminating various edge cases.
-	 */
-	limits->dma_alignment = limits->logical_block_size - 1;
-}
+extern void verity_io_hints(struct dm_target *ti, struct queue_limits *limits);
 
 #ifdef CONFIG_SECURITY
 
@@ -988,48 +779,8 @@ static inline void verity_free_sig(struct dm_verity *v)
 
 #endif /* CONFIG_SECURITY */
 
-static void verity_dtr(struct dm_target *ti)
-{
-	struct dm_verity *v = ti->private;
+extern void verity_dtr(struct dm_target *ti);
 
-	if (v->verify_wq)
-		destroy_workqueue(v->verify_wq);
-
-	mempool_exit(&v->recheck_pool);
-	if (v->io)
-		dm_io_client_destroy(v->io);
-
-	if (v->bufio)
-		dm_bufio_client_destroy(v->bufio);
-
-	kvfree(v->validated_blocks);
-	kfree(v->salt);
-	kfree(v->initial_hashstate);
-	kfree(v->root_digest);
-	kfree(v->zero_digest);
-	verity_free_sig(v);
-
-	crypto_free_shash(v->shash_tfm);
-
-	kfree(v->alg_name);
-
-	if (v->hash_dev)
-		dm_put_device(ti, v->hash_dev);
-
-	if (v->data_dev)
-		dm_put_device(ti, v->data_dev);
-
-	verity_fec_dtr(v);
-
-	kfree(v->signature_key_desc);
-
-	if (v->use_bh_wq)
-		static_branch_dec(&use_bh_wq_enabled);
-
-	kfree(v);
-
-	dm_audit_log_dtr(DM_MSG_PREFIX, ti, 1);
-}
 
 static int verity_alloc_most_once(struct dm_verity *v)
 {
@@ -1653,36 +1404,8 @@ static inline int verity_security_set_signature(struct block_device *bdev,
  *
  * Returns 0 on success, or -ENOMEM if the system is out of memory.
  */
-static int verity_preresume(struct dm_target *ti)
-{
-	struct block_device *bdev;
-	struct dm_verity_digest root_digest;
-	struct dm_verity *v;
-	int r;
+extern int verity_preresume(struct dm_target *ti);
 
-	v = ti->private;
-	bdev = dm_disk(dm_table_get_md(ti->table))->part0;
-	root_digest.digest = v->root_digest;
-	root_digest.digest_len = v->digest_size;
-	root_digest.alg = crypto_shash_alg_name(v->shash_tfm);
-
-	r = security_bdev_setintegrity(bdev, LSM_INT_DMVERITY_ROOTHASH, &root_digest,
-				       sizeof(root_digest));
-	if (r)
-		return r;
-
-	r =  verity_security_set_signature(bdev, v);
-	if (r)
-		goto bad;
-
-	return 0;
-
-bad:
-
-	security_bdev_setintegrity(bdev, LSM_INT_DMVERITY_ROOTHASH, NULL, 0);
-
-	return r;
-}
 
 #endif /* CONFIG_SECURITY */
 
@@ -1700,7 +1423,6 @@ static struct target_type verity_signed_target = {
 	.prepare_ioctl	= verity_prepare_ioctl, // very important, filters dangerous ioctls(input/output control--> sends instructions)
 	.iterate_devices = verity_iterate_devices,
 	.io_hints	= verity_io_hints,
-	.presuspend = verity_presuspend,
 	.postsuspend = verity_postsuspend,
 #ifdef CONFIG_SECURITY
 	.preresume	= verity_preresume,
@@ -1708,16 +1430,10 @@ static struct target_type verity_signed_target = {
 };
 module_dm(verity_signed);
 
-/*
- * Check whether a DM target is a verity target.
- */
-bool dm_is_verity_target(struct dm_target *ti)
-{
-	return ti->type == &verity_target;
-}
 
-MODULE_AUTHOR("Mikulas Patocka <mpatocka@redhat.com>");
-MODULE_AUTHOR("Mandeep Baines <msb@chromium.org>");
-MODULE_AUTHOR("Will Drewry <wad@chromium.org>");
-MODULE_DESCRIPTION(DM_NAME " target for transparent disk integrity checking");
-MODULE_LICENSE("GPL");
+
+// MODULE_AUTHOR("Mikulas Patocka <mpatocka@redhat.com>");
+// MODULE_AUTHOR("Mandeep Baines <msb@chromium.org>");
+// MODULE_AUTHOR("Will Drewry <wad@chromium.org>");
+// MODULE_DESCRIPTION(DM_NAME " target for transparent disk integrity checking");
+// MODULE_LICENSE("GPL");
