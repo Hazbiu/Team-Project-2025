@@ -67,14 +67,14 @@ fi
 
 rm -f "$TMP_HASH"
 
-DEST_PATH="/mnt/d/Team-Project-2025/src/boot"
-mkdir -p "$DEST_PATH"
-cp -f "$ROOTFS_IMG" "$VERITY_INFO" "$META_FILE" "$DEST_PATH/" 2>/dev/null || true
-[ -f "${META_FILE}.sig" ] && cp -f "${META_FILE}.sig" "$DEST_PATH/"
+# --- Commented out problematic Windows mount path (/mnt/d) ---
+# DEST_PATH="/mnt/d/Team-Project-2025/src/boot"
+# mkdir -p "$DEST_PATH"
+# cp -f "$ROOTFS_IMG" "$VERITY_INFO" "$META_FILE" "$DEST_PATH/" 2>/dev/null || true
+# [ -f "${META_FILE}.sig" ] && cp -f "${META_FILE}.sig" "$DEST_PATH/"
 
 echo
 echo "dm-verity hash tree appended successfully."
 echo "Root hash: ${ROOTHASH:-<missing>}"
 echo "Offset (blocks): ${HASH_OFFSET_BLOCKS}"
-echo "Artifacts copied to Windows side."
-
+echo "Artifacts stored in local boot directory: $BOOT_DIR"

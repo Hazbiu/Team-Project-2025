@@ -22,6 +22,15 @@ if ! command -v busybox &>/dev/null; then
 fi
 cp "$(command -v busybox)" "$INITRAMFS_DIR/bin/"
 
+# Add dmsetup and veritysetup if available
+if command -v dmsetup &>/dev/null; then
+  cp "$(command -v dmsetup)" "$INITRAMFS_DIR/sbin/"
+fi
+if command -v veritysetup &>/dev/null; then
+  cp "$(command -v veritysetup)" "$INITRAMFS_DIR/sbin/"
+fi
+
+
 # Create minimal /init script
 cat > "$INITRAMFS_DIR/init" <<'EOF'
 #!/bin/sh
@@ -112,3 +121,9 @@ openssl dgst -sha256 -sign "${BOOT_DIR}/bl_private.pem" \
   "$INITRAMFS_IMG"
 
 echo "Initramfs signed successfully."
+
+# --- Commented out Windows /mnt/d sync (future safety) ---
+# DEST_PATH="/mnt/d/Team-Project-2025/src/boot"
+# mkdir -p "$DEST_PATH"
+# cp -f "$INITRAMFS_IMG" "$INITRAMFS_IMG.sig" "$DEST_PATH/" 2>/dev/null || true
+# echo "Initramfs copied to Windows mount: $DEST_PATH"
