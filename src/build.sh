@@ -200,7 +200,7 @@ echo "[10/10] Launching Secure Boot Demo in QEMU..."
 qemu-system-x86_64 \
   -m 1024 \
   -kernel "${BOOT_DIR}/kernel_image.bin" \
-  -initrd "${BOOT_DIR}/initramfs.cpio.gz" \
+  -initrd "${BOOT_DIR}/rootfs.cpio.gz" \
   -drive file="${ROOTFS_IMG}",format=raw,if=virtio \
   -append "root=/dev/${ROOT_DEV_BASE}${ROOT_PARTNUM} rw console=ttyS0" \
   -nographic

@@ -68,6 +68,9 @@ struct dm_verity_prefetch_work {
 	unsigned int n_blocks;
 };
 
+
+
+
 /*
  * Auxiliary structure appended to each dm-bufio buffer. If the value
  * hash_verified is nonzero, hash of the block has been verified.
@@ -1719,3 +1722,14 @@ MODULE_AUTHOR("Mandeep Baines <msb@chromium.org>");
 MODULE_AUTHOR("Will Drewry <wad@chromium.org>");
 MODULE_DESCRIPTION(DM_NAME " target for transparent disk integrity checking");
 MODULE_LICENSE("GPL");
+
+EXPORT_SYMBOL_GPL(verity_map);
+EXPORT_SYMBOL_GPL(verity_dtr);
+EXPORT_SYMBOL_GPL(verity_status);
+EXPORT_SYMBOL_GPL(verity_iterate_devices);
+EXPORT_SYMBOL_GPL(verity_io_hints);
+EXPORT_SYMBOL_GPL(verity_postsuspend);
+#ifdef CONFIG_SECURITY
+EXPORT_SYMBOL_GPL(verity_preresume);
+#endif
+EXPORT_SYMBOL_GPL(verity_prepare_ioctl);

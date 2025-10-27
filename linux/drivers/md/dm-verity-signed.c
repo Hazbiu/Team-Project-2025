@@ -1435,5 +1435,5 @@ module_dm(verity_signed);
 // MODULE_AUTHOR("Mikulas Patocka <mpatocka@redhat.com>");
 // MODULE_AUTHOR("Mandeep Baines <msb@chromium.org>");
 // MODULE_AUTHOR("Will Drewry <wad@chromium.org>");
-// MODULE_DESCRIPTION(DM_NAME " target for transparent disk integrity checking");
-// MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION(DM_NAME " target for transparent disk integrity checking");
+MODULE_LICENSE("GPL");
