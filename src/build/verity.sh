@@ -5,11 +5,19 @@ echo "============================================"
 echo " dm-verity Hash Image Generation Script"
 echo "============================================"
 
-if [ -z "${BOOT_DIR:-}" ] || [ -z "${ROOTFS_IMG:-}" ]; then
-  echo "Error: BOOT_DIR or ROOTFS_IMG not set."
+if [ -z "${BOOT_DIR:-}" ] || { [ -z "${ROOTFS_IMG:-}" ] && [ -z "${DISK_IMG:-}" ]; }; then
+  echo "Error: BOOT_DIR and DISK_IMG/ROOTFS_IMG not set."
   exit 1
 fi
 
+# Prefer DISK_IMG if present
+if [ -n "${DISK_IMG:-}" ]; then
+  IMG_PATH="$DISK_IMG"
+else
+  IMG_PATH="$ROOTFS_IMG"
+fi
+
+# Ensure dm-verity tools
 if ! command -v veritysetup &>/dev/null; then
   echo "[1/10] Installing dm-verity dependencies..."
   sudo apt update
@@ -19,26 +27,46 @@ fi
 VERITY_INFO="${BOOT_DIR}/verity_info.txt"
 META_FILE="${BOOT_DIR}/rootfs.verity.meta"
 
-echo "[9.5/10] Creating dm-verity hash tree INSIDE rootfs.img..."
-echo "Input rootfs:  $ROOTFS_IMG"
+echo "[9.5/10] Creating dm-verity hash tree inside image..."
+echo "Input image: $IMG_PATH"
 echo
+
+# --- Map and locate rootfs partition (p2) ---
+LOOP=$(sudo losetup -f --show -P "$IMG_PATH")
+ROOT_PART="${LOOP}p2"
+
+if [ ! -b "$ROOT_PART" ]; then
+  echo "Error: Rootfs partition (p2) not found inside $IMG_PATH"
+  sudo losetup -d "$LOOP"
+  exit 1
+fi
 
 # Create temporary hash tree file
 TMP_HASH=$(mktemp --tmpdir rootfs_verity.XXXXXX)
 
-sudo veritysetup format "$ROOTFS_IMG" "$TMP_HASH" \
+sudo veritysetup format "$ROOT_PART" "$TMP_HASH" \
   --data-block-size=4096 \
   --hash-block-size=4096 \
   --hash=sha256 \
   --uuid="$(uuidgen)" | tee "$VERITY_INFO"
 
-DATA_SIZE_BYTES=$(stat -c%s "$ROOTFS_IMG")
+DATA_SIZE_BYTES=$(sudo blockdev --getsize64 "$ROOT_PART")
+
 HASH_SIZE_BYTES=$(stat -c%s "$TMP_HASH")
 HASH_OFFSET_BLOCKS=$((DATA_SIZE_BYTES / 4096))
 
-# Append the hash tree to the end of the rootfs
-truncate -s $((DATA_SIZE_BYTES + HASH_SIZE_BYTES)) "$ROOTFS_IMG"
-dd if="$TMP_HASH" of="$ROOTFS_IMG" bs=1 seek="$DATA_SIZE_BYTES" conv=notrunc status=none
+# Append hash tree to the end of the WHOLE disk image, not inside p2
+echo "[+] Appending verity hash tree to disk image..."
+DATA_SIZE_BYTES=$(sudo blockdev --getsize64 "$ROOT_PART")
+DISK_SIZE_BYTES=$(stat -c%s "$IMG_PATH")
+NEW_SIZE=$((DISK_SIZE_BYTES + HASH_SIZE_BYTES))
+
+# Extend disk image
+sudo truncate -s "$NEW_SIZE" "$IMG_PATH"
+
+# Append hash tree at the end of disk.img
+sudo dd if="$TMP_HASH" of="$IMG_PATH" bs=1M seek=$((DISK_SIZE_BYTES / 1048576)) conv=notrunc status=none
+
 
 ROOTHASH=$(grep -oP 'Root hash:\s+\K[0-9a-f]+' "$VERITY_INFO" || true)
 SALT=$(grep -oP 'Salt:\s+\K[0-9a-f]+' "$VERITY_INFO" || true)
@@ -66,15 +94,10 @@ else
 fi
 
 rm -f "$TMP_HASH"
-
-# --- Commented out problematic Windows mount path (/mnt/d) ---
-# DEST_PATH="/mnt/d/Team-Project-2025/src/boot"
-# mkdir -p "$DEST_PATH"
-# cp -f "$ROOTFS_IMG" "$VERITY_INFO" "$META_FILE" "$DEST_PATH/" 2>/dev/null || true
-# [ -f "${META_FILE}.sig" ] && cp -f "${META_FILE}.sig" "$DEST_PATH/"
+sudo losetup -d "$LOOP"
 
 echo
-echo "dm-verity hash tree appended successfully."
+echo "✅ dm-verity hash tree appended successfully."
 echo "Root hash: ${ROOTHASH:-<missing>}"
 echo "Offset (blocks): ${HASH_OFFSET_BLOCKS}"
 echo "Artifacts stored in local boot directory: $BOOT_DIR"
