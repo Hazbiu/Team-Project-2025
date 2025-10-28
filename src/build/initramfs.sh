@@ -21,6 +21,11 @@ if ! command -v busybox &>/dev/null; then
   exit 1
 fi
 cp "$(command -v busybox)" "$INITRAMFS_DIR/bin/"
+# Add symlinks for common BusyBox utilities so we can inspect the kernel cmdline
+for cmd in cat grep dmesg ls; do
+    ln -sf /bin/busybox "$INITRAMFS_DIR/bin/$cmd"
+done
+
 
 # Add dmsetup and veritysetup if available
 if command -v dmsetup &>/dev/null; then

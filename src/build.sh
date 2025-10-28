@@ -42,6 +42,22 @@ echo "Workspace ready at ~/TeamRoot"
 ls
 
 # ==========================================================
+#  CLEAN OLD KERNEL BUILDS
+# ==========================================================
+echo "[0.5/10] Cleaning old kernel build files..."
+
+if [ -d ~/linux-6.6 ]; then
+  echo "Removing old kernel build artifacts in ~/linux-6.6 ..."
+  sudo rm -rf ~/linux-6.6/{build,.tmp_versions,Module.symvers,*.o,*.o.cmd,*.mod,*.mod.c,*.order,*.dwo,*.d} 2>/dev/null || true
+  sudo find ~/linux-6.6 -type f \( -name "*.o" -o -name "*.cmd" \) -delete
+  echo "Kernel build tree cleaned."
+else
+  echo "No ~/linux-6.6 directory found — skipping kernel cleanup."
+fi
+
+
+
+# ==========================================================
 #  SECURE BOOT BUILD PROCESS
 # ==========================================================
 
@@ -136,7 +152,8 @@ read -p "Step 7 complete. Press ENTER to continue to step 8..."
 
 # --- Build and configure root filesystem using external script ---
 export ROOT_DIR BOOT_DIR KEYS_DIR ROOTFS_DIR
-bash "${ROOT_DIR}/build/rootfs.sh"
+sudo --preserve-env=ROOT_DIR,BOOT_DIR,KEYS_DIR,ROOTFS_DIR bash "${ROOT_DIR}/build/rootfs.sh"
+
 
 # --- Build initramfs using external script ---
 export ROOT_DIR BOOT_DIR KEYS_DIR
@@ -222,9 +239,7 @@ OFFSET=$(grep '^offset=' "$META_FILE" | cut -d= -f2)
 
 echo "[10/10] Launching Secure Boot Demo in QEMU with dm-verity..."
 
-# --- Commented out problematic /mnt/d usage ---
-# mkdir /mnt/d
-# cp something to /mnt/d  # <— remove or comment any /mnt/d lines if they existed
+
 
 qemu-system-x86_64 \
   -m 1024 \

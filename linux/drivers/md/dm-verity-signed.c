@@ -93,11 +93,25 @@ static int verity_signed_ctr(struct dm_target *ti, unsigned int argc, char **arg
 	size_t meta_len = 0, sig_len = 0;
 	int r;
 
+	/* --- Log what we received from dm-mod.create --- */
+	pr_info(DM_MSG_PREFIX ": target constructor called, argc=%u\n", argc);
+	for (unsigned int i = 0; i < argc; i++)
+		pr_info(DM_MSG_PREFIX ": argv[%u] = '%s'\n", i, argv[i]);
+
+	/* Optional: show the kernel cmdline for debugging */
+#if defined(CONFIG_PRINTK)
+	extern char *saved_command_line;
+	pr_info("Kernel cmdline: %s\n", saved_command_line);
+	pr_info(DM_MSG_PREFIX ": full cmdline: %s\n", saved_command_line);
+#endif
+
+	/* --- Usage check --- */
 	if (argc < 2) {
 		ti->error = "Usage: verity-signed <meta_path> <sig_path>";
 		return -EINVAL;
 	}
 
+	/* --- Allocate context --- */
 	vc = kzalloc(sizeof(*vc), GFP_KERNEL);
 	if (!vc)
 		return -ENOMEM;
@@ -109,7 +123,12 @@ static int verity_signed_ctr(struct dm_target *ti, unsigned int argc, char **arg
 		goto err_free_ctx;
 	}
 
-	/* Read files */
+	/* --- Print parameters clearly --- */
+	DMINFO("received parameters:");
+	DMINFO("  meta_path = '%s'", vc->meta_path);
+	DMINFO("  sig_path  = '%s'", vc->sig_path);
+
+	/* --- Read and verify files --- */
 	r = read_whole_file(vc->meta_path, &meta, &meta_len);
 	if (r) {
 		DMERR("failed to read metadata '%s': %d", vc->meta_path, r);
@@ -122,7 +141,6 @@ static int verity_signed_ctr(struct dm_target *ti, unsigned int argc, char **arg
 		goto err_free_meta;
 	}
 
-	/* Verify PKCS#7 signature over metadata */
 	r = verify_signature(meta, meta_len, sig, sig_len);
 	if (r) {
 		DMERR("PKCS#7 verification failed for '%s' (sig '%s'): %d",
@@ -130,16 +148,8 @@ static int verity_signed_ctr(struct dm_target *ti, unsigned int argc, char **arg
 		goto err_free_sig;
 	}
 
-	DMINFO("metadata verified (PKCS#7). meta='%s' sig='%s' size=%zu/%zu",
+	DMINFO("metadata verified successfully (PKCS#7). meta='%s' sig='%s' size=%zu/%zu",
 	       vc->meta_path, vc->sig_path, meta_len, sig_len);
-
-	/*
-	 * TODO next:
-	 * - parse 'meta' (root hash, salt, offset, devices, etc.)
-	 * - construct an inner 'verity' target or set ti->private to a
-	 *   structure that forwards to the core dm-verity.
-	 * For now, we just succeed after verification.
-	 */
 
 	vfree(sig);
 	vfree(meta);
@@ -156,6 +166,7 @@ err_free_ctx:
 	kfree(vc);
 	return r;
 }
+
 
 static void verity_signed_dtr(struct dm_target *ti)
 {
@@ -178,13 +189,18 @@ static struct target_type verity_signed_target = {
 	/* map/end_io/etc. to be added once we wrap/chain to core dm-verity */
 };
 
+
 static int __init verity_signed_init(void)
 {
-	int r = dm_register_target(&verity_signed_target);
-	if (!r)
-		pr_info(DM_MSG_PREFIX ": registered\n");
-	return r;
+    pr_info("verity-signed: Kernel cmdline: %s\n", saved_command_line);
+
+    /* Example: parse the key or root device later if you need */
+    if (strstr(saved_command_line, "verity_key="))
+        pr_info("verity-signed: found verity_key parameter\n");
+
+    return dm_register_target(&verity_signed_target);
 }
+
 
 static void __exit verity_signed_exit(void)
 {

@@ -1,5 +1,6 @@
-// secondary_bootloader.c
-// Secure second-stage bootloader: verify all artifacts, detect rootfs, boot kernel.
+// Minimal secondary bootloader: verify kernel image, decide root device from image,
+// pass ONLY root and verity_key on the kernel cmdline, and exec QEMU.
+
 // Build: gcc -O2 -Wall -Wextra -o secondary_bootloader secondary_bootloader.c -lcrypto
 
 #define _GNU_SOURCE
@@ -7,41 +8,30 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <stdint.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/err.h>
-#include <openssl/rsa.h>
 
-// ---------- Config: artifact paths (keep in sync with build.sh) ----------
-static const char *PUBKEY_PATH  = "bl_public.pem";
-static const char *KERNEL_IMG   = "kernel_image.bin";
-static const char *KERNEL_SIG   = "kernel_image.sig";
-static const char *INITRD_IMG   = "initramfs.cpio.gz";    // build.sh outputs this name
-static const char *INITRD_SIG   = "rootfs.cpio.gz.sig";   // signature for initramfs
-static const char *ROOTFS_IMG   = "rootfs.img";
-static const char *ROOTFS_SIG   = "rootfs.img.sig";
-static const char *VERITY_META  = "rootfs.verity.meta";
-static const char *VERITY_SIG   = "rootfs.verity.meta.sig";
+static const char *PUBKEY_PATH   = "bl_public.pem";
+static const char *KERNEL_IMG    = "kernel_image.bin";
+static const char *KERNEL_SIG    = "kernel_image.sig";
+static const char *ROOTFS_IMG    = "rootfs.img";
+static const char *VERITY_KEY_ID = "rootfs-trusted-cert"; // default key id
 
 static void die(const char *fmt, ...) __attribute__((noreturn, format(printf,1,2)));
 static void die(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     vfprintf(stderr, fmt, ap); va_end(ap);
     fputc('\n', stderr);
-    exit(1);
+    exit(EXIT_FAILURE);
 }
 
-static int file_exists(const char *p) {
-    struct stat st; return stat(p, &st) == 0 && S_ISREG(st.st_mode);
-}
-
-// ---------- Signature verification (streamed) ----------
+/* ---------- Signature verification for kernel ---------- */
 static int verify_signature(const char *image, const char *sig, const char *pubkey_path) {
     FILE *imgf = fopen(image, "rb");
     if (!imgf) { perror(image); return 0; }
@@ -50,262 +40,164 @@ static int verify_signature(const char *image, const char *sig, const char *pubk
     if (!sigf) { perror(sig); fclose(imgf); return 0; }
 
     if (fseek(sigf, 0, SEEK_END) != 0) { perror("fseek(sig)"); fclose(imgf); fclose(sigf); return 0; }
-    long L = ftell(sigf);
-    if (L <= 0 || L > (64 * 1024)) { fprintf(stderr, "Bad sig size for %s: %ld\n", sig, L); fclose(imgf); fclose(sigf); return 0; }
+    long siglen = ftell(sigf);
+    if (siglen <= 0 || siglen > (64 * 1024)) { fprintf(stderr, "Bad sig size: %ld\n", siglen); fclose(imgf); fclose(sigf); return 0; }
     rewind(sigf);
 
-    unsigned char *sig_buf = (unsigned char*)malloc((size_t)L);
-    if (!sig_buf) { perror("malloc(sig_buf)"); fclose(imgf); fclose(sigf); return 0; }
-    size_t r = fread(sig_buf, 1, (size_t)L, sigf);
+    unsigned char *sigbuf = malloc((size_t)siglen);
+    if (!sigbuf) { perror("malloc"); fclose(imgf); fclose(sigf); return 0; }
+    if (fread(sigbuf, 1, (size_t)siglen, sigf) != (size_t)siglen) {
+        fprintf(stderr, "Short read on %s\n", KERNEL_SIG);
+        free(sigbuf); fclose(imgf); fclose(sigf); return 0;
+    }
     fclose(sigf);
-    if (r != (size_t)L) { fprintf(stderr, "Short read on %s\n", sig); free(sig_buf); fclose(imgf); return 0; }
 
     FILE *pubf = fopen(pubkey_path, "r");
-    if (!pubf) { perror(pubkey_path); free(sig_buf); fclose(imgf); return 0; }
+    if (!pubf) { perror(pubkey_path); free(sigbuf); fclose(imgf); return 0; }
     EVP_PKEY *pkey = PEM_read_PUBKEY(pubf, NULL, NULL, NULL);
     fclose(pubf);
-    if (!pkey) {
-        fprintf(stderr, "Failed to parse public key: %s\n", pubkey_path);
-        ERR_print_errors_fp(stderr);
-        free(sig_buf); fclose(imgf); return 0;
-    }
+    if (!pkey) { ERR_print_errors_fp(stderr); free(sigbuf); fclose(imgf); return 0; }
 
     EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    if (!ctx) { perror("EVP_MD_CTX_new"); EVP_PKEY_free(pkey); free(sig_buf); fclose(imgf); return 0; }
-
     int ok = 0;
-    EVP_PKEY_CTX *pctx = NULL;
-    if (EVP_DigestVerifyInit(ctx, &pctx, EVP_sha256(), NULL, pkey) != 1) {
-        ERR_print_errors_fp(stderr);
-        goto out;
+    if (EVP_DigestVerifyInit(ctx, NULL, EVP_sha256(), NULL, pkey) == 1) {
+        unsigned char buf[4096];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof buf, imgf)) > 0)
+            EVP_DigestVerifyUpdate(ctx, buf, n);
+        if (EVP_DigestVerifyFinal(ctx, sigbuf, (size_t)siglen) == 1)
+            ok = 1;
     }
-    // Prefer RSA-PSS if key type is RSA
-    if (EVP_PKEY_base_id(pkey) == EVP_PKEY_RSA) {
-        if (EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PSS_PADDING) != 1 ||
-            EVP_PKEY_CTX_set_rsa_pss_saltlen(pctx, -1) != 1) {
-            fprintf(stderr, "Warning: couldn't enforce RSA-PSS (using key default).\n");
-            ERR_print_errors_fp(stderr);
-        }
-    }
-
-    unsigned char buf[4096];
-    for (;;) {
-        size_t n = fread(buf, 1, sizeof buf, imgf);
-        if (n > 0) {
-            if (EVP_DigestVerifyUpdate(ctx, buf, n) != 1) {
-                ERR_print_errors_fp(stderr);
-                goto out;
-            }
-        }
-        if (n < sizeof buf) {
-            if (ferror(imgf)) { perror("fread(image)"); goto out; }
-            break; // EOF
-        }
-    }
-
-    if (EVP_DigestVerifyFinal(ctx, sig_buf, (size_t)L) == 1) ok = 1;
-    else {
+    if (!ok) {
         fprintf(stderr, "Signature verification failed for %s\n", image);
         ERR_print_errors_fp(stderr);
     }
 
-out:
     EVP_MD_CTX_free(ctx);
     EVP_PKEY_free(pkey);
-    free(sig_buf);
+    free(sigbuf);
     fclose(imgf);
     return ok;
 }
 
-// ---------- Tiny GPT reader: find partition named "rootfs" ----------
-#pragma pack(push,1)
-typedef struct {
-    char     signature[8];    // "EFI PART"
-    uint32_t revision, header_size, header_crc32, reserved;
-    uint64_t current_lba, backup_lba, first_usable_lba, last_usable_lba;
-    uint8_t  disk_guid[16];
-    uint64_t part_entry_lba;
-    uint32_t num_part_entries, size_part_entry, part_array_crc32;
-} GPTHeader;
+/* ---------- Decide guest root device name from image ---------- */
+static const char *root_dev_from_image(const char *img_path) {
+    static char root_dev[16];
 
-typedef struct {
-    uint8_t  type_guid[16], uniq_guid[16];
-    uint64_t first_lba, last_lba, attrs;
-    uint16_t name_utf16[36]; // UTF-16LE
-} GPTEntry;
-#pragma pack(pop)
-
-static int read_exact(FILE *f, void *buf, size_t n, uint64_t off) {
-    if (fseeko(f, (off_t)off, SEEK_SET) != 0) return 0;
-    return fread(buf, 1, n, f) == n;
-}
-
-// returns 1-based partition index with GPT name "rootfs", else 0
-static int gpt_find_rootfs_partition(const char *img_path) {
-    FILE *f = fopen(img_path, "rb");
-    if (!f) { perror(img_path); return 0; }
-
-    // read GPT header at LBA1 (offset 512)
-    GPTHeader hdr;
-    if (!read_exact(f, &hdr, sizeof hdr, 512) || memcmp(hdr.signature, "EFI PART", 8) != 0) {
-        fclose(f);
-        return 0;
-    }
-    if (hdr.size_part_entry < sizeof(GPTEntry) || hdr.num_part_entries > 512) {
-        fclose(f);
-        return 0;
+    int fd = open(img_path, O_RDONLY);
+    if (fd < 0) {
+        perror(img_path);
+        // If we can't open, still give a sensible default to avoid blocking boot
+        snprintf(root_dev, sizeof root_dev, "/dev/vda");
+        return root_dev;
     }
 
-    const uint64_t entry_off = hdr.part_entry_lba * 512ULL;
-    for (uint32_t i = 0; i < hdr.num_part_entries && i < 128; ++i) {
-        GPTEntry e;
-        if (!read_exact(f, &e, sizeof e, entry_off + (uint64_t)i * hdr.size_part_entry)) break;
-        if (e.first_lba == 0 && e.last_lba == 0) continue; // unused
+    /* Read first few KB to check for GPT/MBR */
+    unsigned char buf[4096] = {0};
+    ssize_t r = pread(fd, buf, sizeof buf, 0);
+    if (r < 1024) { // too small to be valid MBR anyway
+        close(fd);
+        snprintf(root_dev, sizeof root_dev, "/dev/vda");
+        return root_dev;
+    }
 
-        // Convert UTF-16LE name → ASCII (lossy)
-        char name[73] = {0};
-        for (int k = 0; k < 36; ++k) {
-            uint16_t ch = e.name_utf16[k];
-            if (!ch) break;
-            name[k] = (char)(ch & 0xFF);
-        }
-        if (strcmp(name, "rootfs") == 0) {
-            fclose(f);
-            return (int)(i + 1); // 1-based index
+    /* GPT: "EFI PART" at LBA1 (offset 512) */
+    if (r >= 512 + 8) {
+        if (memcmp(buf + 512, "EFI PART", 8) == 0) {
+            close(fd);
+            snprintf(root_dev, sizeof root_dev, "/dev/vda1");
+            return root_dev;
         }
     }
 
-    fclose(f);
-    return 0;
+    /* Legacy MBR: partition entries at 0x1BE, signature 0x55AA at 0x1FE */
+    int is_mbr = (buf[510] == 0x55 && buf[511] == 0xAA);
+    if (is_mbr) {
+        int has_part = 0;
+        for (int i = 0; i < 4; i++) {
+            const unsigned char *pe = buf + 0x1BE + i * 16;
+            if (pe[4] != 0x00) { has_part = 1; break; } // non-empty partition type
+        }
+        close(fd);
+        if (has_part) {
+            snprintf(root_dev, sizeof root_dev, "/dev/vda1");
+            return root_dev;
+        }
+    }
+
+    close(fd);
+    // No partition table detected → assume raw filesystem image
+    snprintf(root_dev, sizeof root_dev, "/dev/vda");
+    return root_dev;
 }
 
-// ---------- Metadata parser (roothash, salt, offset) ----------
-typedef struct {
-    char roothash[129];
-    char salt[129];
-    unsigned long long offset;
-} VerityMeta;
+/* ---------- Launch kernel in QEMU with minimal cmdline ---------- */
+static int boot_kernel(const char *kernel_path,
+                       const char *rootfs_img,
+                       const char *verity_keyid)
+{
+    char append[256];
+    snprintf(append, sizeof append,
+             "console=ttyS0 root=/dev/vda1 ro verity_key=%s",
+             verity_keyid);
 
-static int parse_verity_metadata(const char *path, VerityMeta *out) {
-    FILE *f = fopen(path, "r"); if (!f) return 0;
-    char key[64], val[256];
-    while (fscanf(f, "%63[^=]=%255s\n", key, val) == 2) {
-        if (strcmp(key, "roothash") == 0)
-            strncpy(out->roothash, val, sizeof(out->roothash)-1);
-        else if (strcmp(key, "salt") == 0)
-            strncpy(out->salt, val, sizeof(out->salt)-1);
-        else if (strcmp(key, "offset") == 0)
-            out->offset = strtoull(val, NULL, 10);
-    }
-    fclose(f);
-    return out->roothash[0] != 0;
-}
+    const char *argv[] = {
+        "qemu-system-x86_64",
+        "-m", "1024",
+        "-kernel", kernel_path,
+        "-append", append,
+        "-initrd", "initramfs.cpio.gz",
+        "-drive", "file=rootfs.img,format=raw,if=virtio,readonly=on",
+        "-nographic",
+        NULL
+    };
 
-// ---------- QEMU launcher (no shell) ----------
-static int boot_qemu(const char *kernel, const char *initrd, const char *rootfs_img,
-                     const char *root_dev, const VerityMeta *meta) {
-    // Build -drive arg
-    char drive[256];
-    snprintf(drive, sizeof drive, "file=%s,format=raw,if=virtio,readonly=on", rootfs_img);
-
-    // Build -append cmdline
-    char append[768];
-    if (meta && meta->roothash[0]) {
-        snprintf(append, sizeof append,
-                 "console=ttyS0 rdinit=/init root=%s ro verity=1 verity.hash_alg=sha256 roothash=%s verity.salt=%s verity.hashstart=%llu",
-                 root_dev, meta->roothash, meta->salt, meta->offset);
-    } else {
-        snprintf(append, sizeof append,
-                 "console=ttyS0 rdinit=/init root=%s ro verity=1",
-                 root_dev);
-    }
-
-    const char *argv[32];
-    int i = 0;
-    argv[i++] = "qemu-system-x86_64";
-    argv[i++] = "-m";      argv[i++] = "1024";
-    argv[i++] = "-kernel"; argv[i++] = kernel;
-    argv[i++] = "-initrd"; argv[i++] = initrd;
-    argv[i++] = "-drive";  argv[i++] = drive;
-    argv[i++] = "-append"; argv[i++] = append;
-    argv[i++] = "-nographic";
-    argv[i++] = NULL;
-
-    pid_t pid = fork();
-    if (pid < 0) { perror("fork"); return 1; }
-    if (pid == 0) {
-        execvp(argv[0], (char * const *)argv);
-        perror("execvp");
-        _exit(127);
-    }
-    int status = 0;
-    if (waitpid(pid, &status, 0) < 0) { perror("waitpid"); return 1; }
-    if (WIFEXITED(status)) return WEXITSTATUS(status);
-    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    printf("Launching kernel with command line:\n  %s\n", append);
+    execvp(argv[0], (char * const *)argv);
+    perror("execvp");
     return 1;
 }
 
-int main(void) {
-    printf("=====================================\n");
-    printf("   Secure Secondary Bootloader v2    \n");
-    printf("=====================================\n");
+/* ---------- Main ---------- */
+int main(int argc, char **argv) {
+    const char *kernel_img  = KERNEL_IMG;
+    const char *kernel_sig  = KERNEL_SIG;
+    const char *pubkey_path = PUBKEY_PATH;
+    const char *rootfs_img  = ROOTFS_IMG;
+    const char *verity_key  = VERITY_KEY_ID;
+    const char *root_dev_override = NULL;
 
-    // OpenSSL init (best-effort; modern OpenSSL is auto-initializing)
-    ERR_load_crypto_strings();
+    // Optional overrides: --kernel / --sig / --pubkey / --rootfs / --rootdev / --key
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--kernel") && i+1 < argc)      kernel_img = argv[++i];
+        else if (!strcmp(argv[i], "--sig") && i+1 < argc)    kernel_sig = argv[++i];
+        else if (!strcmp(argv[i], "--pubkey") && i+1 < argc) pubkey_path = argv[++i];
+        else if (!strcmp(argv[i], "--rootfs") && i+1 < argc) rootfs_img = argv[++i];
+        else if (!strcmp(argv[i], "--rootdev") && i+1 < argc) root_dev_override = argv[++i];
+        else if (!strcmp(argv[i], "--key") && i+1 < argc)    verity_key = argv[++i];
+        else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
+            printf("Usage: %s [--kernel K] [--sig S] [--pubkey P] [--rootfs IMG] [--rootdev DEV] [--key KEYID]\n", argv[0]);
+            return 0;
+        }
+    }
+
     OpenSSL_add_all_algorithms();
+    ERR_load_crypto_strings();
 
-    // 1) Verify artifacts
-    printf("Verifying artifacts with %s ...\n", PUBKEY_PATH);
-    int ok = 1;
+    printf("Verifying kernel image: %s\n", kernel_img);
+    printf("Using signature file:   %s\n", kernel_sig);
+    printf("Using public key:       %s\n", pubkey_path);
 
-    ok &= verify_signature(KERNEL_IMG, KERNEL_SIG, PUBKEY_PATH);
-    printf("  kernel:   %s\n", ok ? "OK" : "FAIL");
+    if (!verify_signature(kernel_img, kernel_sig, pubkey_path))
+        die("\n Kernel image signature verification FAILED!");
 
-    ok &= verify_signature(INITRD_IMG, INITRD_SIG, PUBKEY_PATH);
-    printf("  initrd:   %s\n", ok ? "OK" : "FAIL");
+    const char *root_dev = root_dev_override ? root_dev_override
+                                             : root_dev_from_image(rootfs_img);
+    printf("rootfs image: %s\n", rootfs_img);
+    printf("guest root dev: %s\n", root_dev);
+    printf("verity key id: %s\n\n", verity_key);
 
-    ok &= verify_signature(ROOTFS_IMG, ROOTFS_SIG, PUBKEY_PATH);
-    printf("  rootfs:   %s\n", ok ? "OK" : "FAIL");
+    // No pauses, no extras: just boot
+    return boot_kernel(kernel_img, rootfs_img, verity_key);
 
-    ok &= verify_signature(VERITY_META, VERITY_SIG, PUBKEY_PATH);
-    printf("  verity:   %s\n", ok ? "OK" : "FAIL");
-
-    if (!ok) die("Verification FAILED. Aborting.");
-
-    // 2) Detect rootfs partition by GPT label "rootfs"
-    const char *root_dev = "/dev/vda"; // fallback if image is an unpartitioned FS
-    int part = gpt_find_rootfs_partition(ROOTFS_IMG);
-    if (part > 0) {
-        static char devbuf[32];
-        snprintf(devbuf, sizeof devbuf, "/dev/vda%d", part);
-        root_dev = devbuf;
-        printf("Detected rootfs partition: %s\n", root_dev);
-    } else {
-        printf("No GPT 'rootfs' label detected; using %s\n", root_dev);
-    }
-
-    // 3) Parse metadata (roothash, salt, offset)
-    VerityMeta meta = {0};
-    if (parse_verity_metadata(VERITY_META, &meta)) {
-        printf("Found metadata:\n");
-        printf("  roothash: %s\n", meta.roothash);
-        printf("  salt:     %s\n", meta.salt);
-        printf("  offset:   %llu\n", meta.offset);
-    } else {
-        printf("No metadata found; proceeding without it.\n");
-    }
-
-    // 4) Boot
-    printf("\nAll artifacts verified. Ready to boot.\n");
-    printf("Press ENTER to continue to kernel boot...\n");
-    fflush(stdout);
-    (void)getchar();
-
-    int rc = boot_qemu(KERNEL_IMG, INITRD_IMG, ROOTFS_IMG, root_dev, &meta);
-    printf("QEMU exited with status %d\n", rc);
-
-    // Cleanup (optional with modern OpenSSL)
-    EVP_cleanup();
-    ERR_free_strings();
-    return rc;
 }
