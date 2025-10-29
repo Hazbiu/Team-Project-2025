@@ -1418,6 +1418,32 @@ static int try_to_run_init_process(const char *init_filename)
 	return ret;
 }
 
+// ------------------------------------------------------------
+// Custom rootfs verification (Team-Project-2025)
+// ------------------------------------------------------------
+#include <linux/namei.h>
+#include <linux/fs.h>
+#include <linux/printk.h>
+
+static void verify_rootfs_existence(void)
+{
+    struct path path;
+    int ret;
+
+    pr_info("[verify] Checking root filesystem existence...\n");
+
+    ret = kern_path("/sbin/init", LOOKUP_FOLLOW, &path);
+    if (ret == 0) {
+        pr_info("[verify] Root filesystem OK — /sbin/init found ✅\n");
+        path_put(&path);
+    } else {
+        pr_err("[verify] Root filesystem verification FAILED ❌\n");
+        pr_err("[verify] /sbin/init not found or rootfs not mounted properly\n");
+    }
+}
+
+
+
 static noinline void __init kernel_init_freeable(void);
 
 #if defined(CONFIG_STRICT_KERNEL_RWX) || defined(CONFIG_STRICT_MODULE_RWX)
@@ -1620,4 +1646,6 @@ static noinline void __init kernel_init_freeable(void)
 	 */
 
 	integrity_load_keys();
+	verify_rootfs_existence();
+
 }
