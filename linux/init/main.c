@@ -115,8 +115,20 @@
 #include <trace/events/initcall.h>
 
 #include <kunit/test.h>
+static char rootfs_loc_param[128] __initdata;
+
+static int __init parse_rootfs_loc(char *str)
+{
+    if (str)
+        strlcpy(rootfs_loc_param, str, sizeof(rootfs_loc_param));
+    return 0;
+}
+early_param("rootfs_loc", parse_rootfs_loc);
 
 static int kernel_init(void *);
+void __init verity_autoconfig(void);
+void __init verity_autoconfig_cmdline_append(const char *extra);
+void __init verity_autoconfig(void);
 
 /*
  * Debug helper: via this flag we know that we are in 'early bootup code'
@@ -169,6 +181,32 @@ static char *ramdisk_execute_command = "/init";
  */
 bool static_key_initialized __read_mostly;
 EXPORT_SYMBOL_GPL(static_key_initialized);
+
+
+void __init verity_autoconfig_cmdline_append(const char *extra)
+{
+	size_t add = strlen(extra);
+	size_t new_len;
+
+	new_len = saved_command_line_len + add + 1;
+	{
+		char *ns = memblock_alloc_or_panic(new_len, SMP_CACHE_BYTES);
+		strcpy(ns, saved_command_line);
+		strcat(ns, extra);
+		saved_command_line = ns;
+		saved_command_line_len = strlen(saved_command_line);
+	}
+
+	{
+		size_t scl = strlen(static_command_line);
+		char *ns = memblock_alloc_or_panic(scl + add + 1, SMP_CACHE_BYTES);
+		strcpy(ns, static_command_line);
+		strcat(ns, extra);
+		static_command_line = ns;
+	}
+}
+
+
 
 /*
  * If set, this is an indication to the drivers that reset the underlying
@@ -936,6 +974,9 @@ void start_kernel(void)
 	early_security_init();
 	setup_boot_config();
 	setup_command_line(command_line);
+
+	verity_autoconfig();
+
 	setup_nr_cpu_ids();
 	setup_per_cpu_areas();
 	smp_prepare_boot_cpu();	/* arch-specific boot-cpu hooks */
