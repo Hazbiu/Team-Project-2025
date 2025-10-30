@@ -1,47 +1,62 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "[9/10] Generating RootFS dm-verity metadata..."
+echo "[9/10] Generating dm-verity metadata (same partition layout)..."
 
-# Paths
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-BOOT_DIR="$ROOT_DIR/boot"
-OUT_DIR="$ROOT_DIR/build/Binaries/metadata"
+BUILD_DIR="$(cd "$(dirname "$0")" && pwd)"
+BIN_DIR="$BUILD_DIR/Binaries"
+META_DIR="$BIN_DIR/metadata"
 
-mkdir -p "$OUT_DIR"
+ROOTFS_IMG="$BIN_DIR/rootfs.img"
+ROOT_HASH_FILE="$META_DIR/root.hash"
+SIG_FILE="$META_DIR/root.hash.sig"
+PRIV_KEY="$BUILD_DIR/../boot/bl_private.pem"
 
-ROOTFS_IMG="$BOOT_DIR/rootfs.img"
-META_OUT="$OUT_DIR/rootfs.verity.meta"
-SIG_OUT="$OUT_DIR/rootfs.verity.meta.sig"
-PRIV_KEY="$BOOT_DIR/bl_private.pem"
+mkdir -p "$META_DIR"
 
 if [[ ! -f "$ROOTFS_IMG" ]]; then
-    echo "❌ rootfs.img not found at $ROOTFS_IMG"
+    echo "❌ rootfs.img not found at: $ROOTFS_IMG"
     exit 1
 fi
 
-echo "[9.1] Running veritysetup to compute hash tree + root hash..."
-TMP_INFO=$(mktemp)
+if [[ ! -f "$PRIV_KEY" ]]; then
+    echo "❌ bl_private.pem not found at: $PRIV_KEY"
+    exit 1
+fi
 
-sudo veritysetup format "$ROOTFS_IMG" "$META_OUT" > "$TMP_INFO"
-ROOT_HASH=$(grep "Root hash:" "$TMP_INFO" | awk '{print $3}')
-echo "$ROOT_HASH" > "$OUT_DIR/root.hash"
-rm "$TMP_INFO"
+echo "[9.1] Detecting filesystem layout..."
+BLOCK_SIZE=$(dumpe2fs -h "$ROOTFS_IMG" 2>/dev/null | awk '/Block size:/ {print $3}')
+BLOCK_COUNT=$(dumpe2fs -h "$ROOTFS_IMG" 2>/dev/null | awk '/Block count:/ {print $3}')
 
-echo "✅ Root hash stored at $OUT_DIR/root.hash"
-echo "   root hash = $ROOT_HASH"
+echo "  Block size:  $BLOCK_SIZE"
+echo "  Block count: $BLOCK_COUNT"
 
-echo "[9.2] Signing metadata..."
-openssl dgst -sha256 -sign "$PRIV_KEY" -out "$SIG_OUT" "$META_OUT"
+HASH_OFFSET=$((BLOCK_COUNT * BLOCK_SIZE))
 
-echo "✅ Metadata signature created: $SIG_OUT"
+echo "[9.2] Appending dm-verity hash tree to the image..."
+sudo veritysetup format \
+    --hash-offset="$HASH_OFFSET" \
+    "$ROOTFS_IMG" "$ROOTFS_IMG" \
+    > "$META_DIR/info.tmp"
 
-echo "[9.3] Copying metadata next to rootfs for final bootloader usage..."
-cp "$META_OUT" "$BOOT_DIR/"
-cp "$SIG_OUT" "$BOOT_DIR/"
+ROOT_HASH=$(grep "Root hash:" "$META_DIR/info.tmp" | awk '{print $3}')
+echo "$ROOT_HASH" > "$ROOT_HASH_FILE"
+rm "$META_DIR/info.tmp"
 
-echo "✅ Copied:"
-echo "   $META_OUT → $BOOT_DIR/rootfs.verity.meta"
-echo "   $SIG_OUT  → $BOOT_DIR/rootfs.verity.meta.sig"
+echo "✅ Root hash stored → $ROOT_HASH_FILE"
+echo "   Root hash = $ROOT_HASH"
 
+echo "[9.3] Signing root hash..."
+openssl dgst -sha256 -sign "$PRIV_KEY" -out "$SIG_FILE" "$ROOT_HASH_FILE"
+
+echo "✅ Signature stored → $SIG_FILE"
+
+sudo chown -R "$USER:$USER" "$META_DIR"
+
+echo
+echo "🎯 FINAL ARTIFACTS:"
+echo "   • $ROOTFS_IMG        (contains filesystem + dm-verity hash tree)"
+echo "   • $ROOT_HASH_FILE    (root hash used by kernel/bootloader)"
+echo "   • $SIG_FILE          (signature for secure validation)"
+echo
 echo "🎉 Metadata generation complete."

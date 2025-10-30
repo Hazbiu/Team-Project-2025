@@ -55,12 +55,14 @@ echo "[ROOTFS] Creating ext4 disk image..."
 sudo rm -rf "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" "$ROOTFS_DIR/dev"
 mkdir -p "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" "$ROOTFS_DIR/dev"
 
-SIZE_MB=$(sudo du -s --block-size=1M "$ROOTFS_DIR" 2>/dev/null | awk '{print int($1*1.4)+100}')
+# Determine image size with extra space for dm-verity hash tree
+SIZE_MB=$(sudo du -s --block-size=1M "$ROOTFS_DIR" 2>/dev/null | awk '{print int($1*1.4)+132}')
 
 echo "Allocating ${SIZE_MB}MB..."
 
 truncate -s "${SIZE_MB}M" "$OUTPUT_IMG"
 mkfs.ext4 -L rootfs "$OUTPUT_IMG" >/dev/null
+
 
 sudo mkdir -p /mnt/rootfs-img
 sudo mount "$OUTPUT_IMG" /mnt/rootfs-img
