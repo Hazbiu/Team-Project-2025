@@ -108,7 +108,7 @@ sudo mkdir -p "${WORKSPACE}/boot" "${WORKSPACE}/keys"
 echo "[2/10] Building primary and secondary bootloaders..."
 cd "$BOOT_DIR"
 gcc -o primary_bootloader primary_bootloader.c -lcrypto -lssl
-gcc -o secondary_bootloader secondary_bootloader.c -lcrypto -lssl
+gcc -o secondary_bootloader /home/ioana/Team-Project-2025/src/bootloaders/secondary_bootloader.c -lcrypto -lssl
 cp secondary_bootloader secondary_bootloader.bin
 read -p "Step 2 complete. Press ENTER to continue to step 3..."
 
@@ -165,9 +165,12 @@ sudo --preserve-env=ROOT_DIR,BOOT_DIR,KEYS_DIR,ROOTFS_DIR bash "${ROOT_DIR}/buil
 # bash "${ROOT_DIR}/build/initramfs.sh"
 
 # --- Package rootfs into ext4 image (flexible partition) ---
+
 echo "[8/10] Packaging rootfs into ext4 image (partition ${ROOT_DEV_BASE}${ROOT_PARTNUM})..."
 IMG_MB=512
 dd if=/dev/zero of="$ROOTFS_IMG" bs=1M count=$IMG_MB
+
+mkdir -p "$(dirname "$DISK_IMG")"
 
 parted -s "$DISK_IMG" mklabel msdos
 parted -s "$DISK_IMG" mkpart primary ext4 1MiB "${BOOT_MB}MiB"
