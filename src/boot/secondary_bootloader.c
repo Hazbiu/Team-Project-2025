@@ -39,23 +39,42 @@ static int read_exact(FILE *f, void *buf, size_t n, uint64_t off) {
     return fread(buf, 1, n, f) == n;
 }
 
+#include <endian.h>    // for le32toh/le64toh
+
 static int gpt_find_rootfs_partition(const char *img) {
     FILE *f = fopen(img, "rb");
     if (!f) return 0;
 
     GPTHeader h;
-    if (!read_exact(f, &h, sizeof h, 512) || memcmp(h.signature,"EFI PART",8)!=0) {
-        fclose(f); return 0;
-    }
+    if (fseeko(f, 512, SEEK_SET) || fread(&h, 1, sizeof h, f) != sizeof h) { fclose(f); return 0; }
+    if (memcmp(h.signature, "EFI PART", 8) != 0) { fclose(f); return 0; }
 
-    for (uint32_t i=0; i<h.count && i<128; ++i) {
-        GPTEntry e;
-        read_exact(f, &e, sizeof e, h.ent_lba*512ULL + i*h.entsz);
-        if (!e.first && !e.last) continue;
+    uint32_t count  = le32toh(h.count);
+    uint32_t entsz  = le32toh(h.entsz);
+    uint64_t ent_lba= le64toh(h.ent_lba);
+    if (entsz < 128 || entsz > 1024 || count > 512) { fclose(f); return 0; } // sanity
 
-        char name[37]={0};
-        for(int k=0;k<36 && e.name[k];k++) name[k]=e.name[k];
-        if (strcmp(name,"rootfs")==0) { fclose(f); return i+1; }
+    // (Optional) validate header/array CRCs here
+
+    // Read entries one by one (handle entsz >= sizeof(GPTEntry))
+    uint8_t buf[1024];
+    for (uint32_t i = 0; i < count && i < 128; ++i) {
+        off_t off = (off_t)ent_lba * 512 + (off_t)i * entsz;
+        if (fseeko(f, off, SEEK_SET) || fread(buf, 1, entsz, f) != entsz) break;
+
+        const GPTEntry *e = (const GPTEntry*)buf;
+        uint64_t first = le64toh(e->first), last = le64toh(e->last);
+        if (!first && !last) continue;
+
+        // Convert UTF-16LE name to ASCII for "rootfs"
+        char name[37] = {0};
+        for (int k = 0; k < 36; ++k) {
+            uint16_t ch = ((const uint16_t*)e->name)[k];
+            ch = le16toh(ch);
+            if (!ch) break;
+            name[k] = (ch < 0x80) ? (char)ch : '?';
+        }
+        if (strcmp(name, "rootfs") == 0) { fclose(f); return (int)(i + 1); }
     }
     fclose(f);
     return 0;

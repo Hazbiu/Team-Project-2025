@@ -234,37 +234,8 @@ openssl smime -sign -binary -in "$META_FILE" \
 echo "PKCS#7 metadata signature created at ${BOOT_DIR}/verity_metadata.p7s"
 
 # --- Generate dm-verity metadata using external script ---
-export ROOT_DIR BOOT_DIR DISK_IMG
+export ROOT_DIR BOOT_DIR
 bash "${ROOT_DIR}/build/verity.sh"
+
 read -p "Step 9 complete. Press ENTER to continue to step 10..."
 
-# ==============================================================
-# [UPDATED STEP 10]  Launch QEMU using /dev/vda2 as rootfs
-# ==============================================================
-
-echo "[10/10] Launching Secure Boot Demo in QEMU..."
-
-if [ "$BOOT_MODE" = "simple" ]; then
-  echo "[10/10] Simple boot (no dm-verity), root=LABEL=rootfs"
-  qemu-system-x86_64 \
-    -m 1024 \
-    -kernel "${BOOT_DIR}/kernel_image.bin" \
-    -initrd "${BOOT_DIR}/initramfs.cpio.gz" \
-    -drive file="${DISK_IMG}",format=raw,if=virtio \
-    -append "console=ttyS0 root=LABEL=rootfs rw" \
-    -nographic
-else
-  META_FILE="${BOOT_DIR}/rootfs.verity.meta"
-  ROOTHASH=$(grep '^roothash=' "$META_FILE" | cut -d= -f2)
-  SALT=$(grep '^salt=' "$META_FILE" | cut -d= -f2)
-  OFFSET=$(grep '^offset=' "$META_FILE" | cut -d= -f2)
-
-  echo "[10/10] dm-verity boot: root=/dev/mapper/verity-root (backed by /dev/vda2)"
-  qemu-system-x86_64 \
-    -m 1024 \
-    -kernel "${BOOT_DIR}/kernel_image.bin" \
-    -initrd "${BOOT_DIR}/initramfs.cpio.gz" \
-    -drive file="${DISK_IMG}",format=raw,if=virtio \
-    -append "console=ttyS0 root=/dev/mapper/verity-root ro dm-mod.create=\"verity-root,,,ro,0 ${OFFSET} verity-signed /dev/vda2 ${ROOTHASH} ${SALT}\"" \
-    -nographic
-fi
