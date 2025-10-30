@@ -562,15 +562,15 @@ config DM_VERITY
 	  If unsure, say N.
 
 
-config DM_VERITY_SIGNED
-	tristate "DM verity with kernel-side metadata verification(verity-signed)"	  
-	depends on DM_VERITY && DM_INIT && KEYS && CRYPTO_RSA && CRYPTO_SHA256
+// config DM_VERITY_SIGNED
+// 	tristate "DM verity with kernel-side metadata verification(verity-signed)"	  
+// 	depends on DM_VERITY
 	
-	help
-		Registers a "verity-signed" device-mapper target. The constructor reads/parses signed 
-		dm-verity metadata in kernel, verifies the signature using the kernel keyring,
-		and then initializes the standard dm-veity mapping. Intended for root-on-verity
-		without an initramfs.
+// 	help
+// 		Registers a "verity-signed" device-mapper target. The constructor reads/parses signed 
+// 		dm-verity metadata in kernel, verifies the signature using the kernel keyring,
+// 		and then initializes the standard dm-veity mapping. Intended for root-on-verity
+// 		without an initramfs.
 
 config DM_VERITY_VERIFY_ROOTHASH_SIG
 	bool "Verity data device root hash signature verification support"

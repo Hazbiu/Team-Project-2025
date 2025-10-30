@@ -12,8 +12,8 @@ INITRAMFS_IMG="${BOOT_DIR}/initramfs.cpio.gz"
 
 # --- 1. Define Paths for Local Tools ---
 # Assuming this script (initramfs.sh) is called from the project root (~/Team-Project-2025)
-# Define the path to the gen_init_cpio utility built in the 'linux' directory.
-GEN_INIT_CPIO_TOOL="cd ../linux/usr/gen_init_cpio" 
+
+GEN_INIT_CPIO_PATH="${HOME}/Team-Project-2025/linux/usr/gen_init_cpio"
 # NOTE: You will use this variable later in the script (at Step 5 in the manual process).
 
 # --- 2. Clean and Recreate Initramfs Staging Directory ---

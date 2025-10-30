@@ -156,8 +156,30 @@ sudo --preserve-env=ROOT_DIR,BOOT_DIR,KEYS_DIR,ROOTFS_DIR bash "${ROOT_DIR}/buil
 
 
 # --- Build initramfs using external script ---
-export ROOT_DIR BOOT_DIR KEYS_DIR
-bash "${ROOT_DIR}/build/initramfs.sh"
+# export ROOT_DIR BOOT_DIR KEYS_DIR
+# bash "${ROOT_DIR}/build/initramfs.sh"
+
+# ==========================================================
+#  COPY NEWLY BUILT MODULE INTO ROOTFS
+# ==========================================================
+echo "[7.5/10] Copying new dm-verity-signed module into rootfs..."
+
+MODULE_SRC_PATH="${ROOT_DIR}/linux-6.6/drivers/md/dm/dm-verity-signed.ko"
+
+if [ -f "$MODULE_SRC_PATH" ]; then
+  # Determine the destination path inside the rootfs
+  # We assume a fixed kernel release for simplicity
+  KERNEL_RELEASE="6.18.0-rc2" # <--- IMPORTANT: SET THIS TO YOUR KERNEL'S RELEASE NAME
+  MODULE_SRC_PATH="/home/ioana/Team-Project-2025/linux/drivers/md/dm/dm-verity-signed.ko"
+  sudo mkdir -p "$MODULE_DEST_DIR"
+  sudo cp "$MODULE_SRC_PATH" "$MODULE_DEST_DIR/"
+  echo "Copied dm-verity-signed.ko to ${MODULE_DEST_DIR}"
+else
+  echo "WARNING: Module not found at ${MODULE_SRC_PATH} - Skipping copy."
+fi
+read -p "Step 7.5 complete. Press ENTER to continue to step 8..."
+
+
 
 # --- Package rootfs into ext4 image (flexible partition) ---
 echo "[8/10] Packaging rootfs into ext4 image (partition ${ROOT_DEV_BASE}${ROOT_PARTNUM})..."
@@ -206,6 +228,7 @@ openssl dgst -sha256 -sign "${BOOT_DIR}/bl_private.pem" \
   -out "${BOOT_DIR}/rootfs.img.sig" \
   "$ROOTFS_IMG"
 
+
 # --- Generate PKCS#7-signed metadata for dm-verity-signed ---
 echo "[9.1] Creating PKCS#7 signature for verity metadata..."
 
@@ -240,11 +263,10 @@ OFFSET=$(grep '^offset=' "$META_FILE" | cut -d= -f2)
 echo "[10/10] Launching Secure Boot Demo in QEMU with dm-verity..."
 
 
-
-qemu-system-x86_64 \
-  -m 1024 \
-  -kernel "${BOOT_DIR}/kernel_image.bin" \
-  -initrd "${BOOT_DIR}/initramfs.cpio.gz" \
-  -drive file="${ROOTFS_IMG}",format=raw,if=virtio \
-  -append "console=ttyS0 root=/dev/mapper/verity-root ro dm-mod.create=\"verity-root,,,ro,0 ${OFFSET} verity-signed /dev/vda1 ${ROOTHASH} ${SALT}\"" \
-  -nographic
+# Execute the primary bootloader, which will start the secondary bootloader,
+# which then executes QEMU via execvp.
+"${BOOT_DIR}/primary_bootloader" \
+    --kernel "${BOOT_DIR}/kernel_image.bin" \
+    --secondary "${BOOT_DIR}/secondary_bootloader.bin" \
+    --signature "${BOOT_DIR}/secondary_bootloader.sig" \
+    --append "root=/dev/mapper/verity-root modules_load=dm-verity dm-mod.create='verity-root,,,ro,0 512 verity-signed /dev/vda verity_metadata.p7s bl_cert.pem' console=ttyS0"

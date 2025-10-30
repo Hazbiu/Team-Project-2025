@@ -1708,7 +1708,7 @@ static struct target_type verity_target = {
 	.preresume	= verity_preresume,
 #endif /* CONFIG_SECURITY */
 };
-module_dm(verity);
+// module_dm(verity);
 
 /*
  * Check whether a DM target is a verity target.
@@ -1735,3 +1735,145 @@ EXPORT_SYMBOL_GPL(verity_postsuspend);
 EXPORT_SYMBOL_GPL(verity_preresume);
 #endif
 EXPORT_SYMBOL_GPL(verity_prepare_ioctl);
+
+// ============================================================================
+//                          dm-verity-signed integration
+// ============================================================================
+
+#include <linux/key.h>
+#include <linux/cred.h>
+#include <linux/verification.h>
+
+/*
+ * Simple example: signed variant of verity that requires signature verification
+ * before calling into normal dm-verity flow.
+ */
+
+struct verity_signed_data {
+	char *sig_file;
+	char *cert_file;
+};
+
+/* Mock signature verification; replace with real PKCS#7 later */
+static int verity_signed_verify_metadata(const char *sig_file, const char *cert_file)
+{
+	if (!sig_file || !cert_file) {
+		pr_err("dm-verity-signed: Missing signature or certificate file\n");
+		return -EINVAL;
+	}
+
+	pr_info("dm-verity-signed: Verifying %s using cert %s (mock pass)\n",
+		sig_file, cert_file);
+
+	/* TODO: Replace this with pkcs7_verify_message() or kernel_verify_pkcs7_signature() */
+	return 0;
+}
+
+/*
+ * Constructor: same as verity_ctr, but adds signature verification.
+ */
+static int verity_signed_ctr(struct dm_target *ti, unsigned int argc, char **argv)
+{
+	struct verity_signed_data *vsd;
+	int ret;
+
+	vsd = kzalloc(sizeof(*vsd), GFP_KERNEL);
+	if (!vsd)
+		return -ENOMEM;
+
+	ti->private = vsd;
+
+	/* Look for extra args: sig_file= and cert_file= */
+	for (unsigned int i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "sig_file=", 9) == 0)
+			vsd->sig_file = kstrdup(argv[i] + 9, GFP_KERNEL);
+		else if (strncmp(argv[i], "cert_file=", 10) == 0)
+			vsd->cert_file = kstrdup(argv[i] + 10, GFP_KERNEL);
+	}
+
+	ret = verity_signed_verify_metadata(vsd->sig_file, vsd->cert_file);
+	if (ret) {
+		ti->error = "Signature verification failed";
+		kfree(vsd->sig_file);
+		kfree(vsd->cert_file);
+		kfree(vsd);
+		return -EKEYREJECTED;
+	}
+
+	/* If verification passed, just call normal verity_ctr */
+	ret = verity_ctr(ti, argc, argv);
+	if (ret) {
+		ti->error = "Underlying dm-verity setup failed";
+		kfree(vsd->sig_file);
+		kfree(vsd->cert_file);
+		kfree(vsd);
+	}
+	return ret;
+}
+
+/*
+ * Destructor: reuse verity_dtr but also free our additions
+ */
+static void verity_signed_dtr(struct dm_target *ti)
+{
+	struct verity_signed_data *vsd = ti->private;
+	if (vsd) {
+		kfree(vsd->sig_file);
+		kfree(vsd->cert_file);
+		kfree(vsd);
+	}
+	verity_dtr(ti);
+}
+
+/*
+ * Reuse verity_map and verity_status directly.
+ */
+
+static struct target_type verity_signed_target = {
+	.name            = "verity-signed",
+	.features        = DM_TARGET_SINGLETON | DM_TARGET_IMMUTABLE,
+	.version         = {1, 0, 0},
+	.module          = THIS_MODULE,
+	.ctr             = verity_signed_ctr,
+	.dtr             = verity_signed_dtr,
+	.map             = verity_map,
+	.status          = verity_status,
+	.prepare_ioctl   = verity_prepare_ioctl,
+	.iterate_devices = verity_iterate_devices,
+	.io_hints        = verity_io_hints,
+#ifdef CONFIG_SECURITY
+	.preresume       = verity_preresume,
+#endif
+};
+
+/*
+ * Replace module_dm(verity) with our own combined init/exit pair.
+ */
+static int __init dm_verity_combined_init(void)
+{
+	int r;
+
+	r = dm_register_target(&verity_target);
+	if (r)
+		return r;
+
+	r = dm_register_target(&verity_signed_target);
+	if (r) {
+		dm_unregister_target(&verity_target);
+		return r;
+	}
+
+	pr_info("dm-verity: registered targets: verity, verity-signed\n");
+	return 0;
+}
+
+static void __exit dm_verity_combined_exit(void)
+{
+	dm_unregister_target(&verity_signed_target);
+	dm_unregister_target(&verity_target);
+}
+
+module_init(dm_verity_combined_init);
+module_exit(dm_verity_combined_exit);
+
+MODULE_DESCRIPTION("Device-mapper verity and verity-signed (secure rootfs)");
