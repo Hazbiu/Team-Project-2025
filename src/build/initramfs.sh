@@ -10,25 +10,35 @@ INITRAMFS_DIR="${BOOT_DIR}/initramfs"
 INITRAMFS_LIST="${BOOT_DIR}/initramfs_list.txt"
 INITRAMFS_IMG="${BOOT_DIR}/initramfs.cpio.gz"
 
-# Clean and recreate
+# --- 1. Define Paths for Local Tools ---
+# Assuming this script (initramfs.sh) is called from the project root (~/Team-Project-2025)
+# Define the path to the gen_init_cpio utility built in the 'linux' directory.
+GEN_INIT_CPIO_TOOL="cd ../linux/usr/gen_init_cpio" 
+# NOTE: You will use this variable later in the script (at Step 5 in the manual process).
+
+# --- 2. Clean and Recreate Initramfs Staging Directory ---
+# # Clean and recreate
 sudo rm -rf "$INITRAMFS_DIR"
-echo "INITRAMFS_DIR Succesfully deleted"                          #Later to be removed
+echo "INITRAMFS_DIR Succesfully deleted" 
 mkdir -p "$INITRAMFS_DIR"/{bin,sbin,etc,proc,sys,dev,newroot}
 
+# --- 3. Copy BusyBox and Create Symlinks ---
 # Copy BusyBox
 if ! command -v busybox &>/dev/null; then
   echo "Error: busybox not installed. Run: sudo apt install busybox"
   exit 1
 fi
-cp "$(command -v busybox)" "$INITRAMFS_DIR/bin/"
+# Use the full path for BusyBox
+BUSYBOX_PATH="$(command -v busybox)"
+cp "$BUSYBOX_PATH" "$INITRAMFS_DIR/bin/"
 
-# Add dmsetup and veritysetup if available
-if command -v dmsetup &>/dev/null; then
-  cp "$(command -v dmsetup)" "$INITRAMFS_DIR/sbin/"
-fi
-if command -v veritysetup &>/dev/null; then
-  cp "$(command -v veritysetup)" "$INITRAMFS_DIR/sbin/"
-fi
+# Add symlinks for common BusyBox utilities so we can inspect the kernel cmdline
+for cmd in cat grep dmesg ls; do
+    # Note: BusyBox symlinks should point to the busybox binary *inside* the initramfs
+    ln -sf busybox "$INITRAMFS_DIR/bin/$cmd"
+done 
+# Removed symlinks pointing to /bin/busybox on the host system, 
+# ensuring they correctly point to 'busybox' within the initramfs /bin.
 
 
 # Create minimal /init script

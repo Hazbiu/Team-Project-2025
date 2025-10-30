@@ -5,8 +5,8 @@ dir /bin 755 0 0
 dir /sbin 755 0 0
 dir /etc 755 0 0
 dir /newroot 755 0 0
-file /init /home/hazbiu/TeamRoot/boot/initramfs/init 755 0 0
-file /bin/busybox /home/hazbiu/TeamRoot/boot/initramfs/bin/busybox 755 0 0
+file /init /home/keti/Team-Project-2025/src/boot/initramfs/init 755 0 0
+file /bin/busybox /home/keti/Team-Project-2025/src/boot/initramfs/bin/busybox 755 0 0
 slink /bin/sh /bin/busybox 777 0 0
 slink /sbin/mount /bin/busybox 777 0 0
 slink /sbin/switch_root /bin/busybox 777 0 0

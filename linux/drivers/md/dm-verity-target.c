@@ -22,6 +22,7 @@
 #include <linux/string.h>
 #include <linux/jump_label.h>
 #include <linux/security.h>
+#include <linux/device-mapper.h> 
 
 #define DM_MSG_PREFIX			"verity"
 
@@ -1320,7 +1321,7 @@ static int verity_setup_salt_and_hashstate(struct dm_verity *v, const char *arg)
  *	<digest>
  *	<salt>		Hex string or "-" if no salt.
  */
-static int verity_ctr(struct dm_target *ti, unsigned int argc, char **argv)
+int verity_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
 	struct dm_verity *v;
 	struct dm_verity_sig_opts verify_args = {0};
@@ -1725,6 +1726,7 @@ MODULE_LICENSE("GPL");
 
 EXPORT_SYMBOL_GPL(verity_map);
 EXPORT_SYMBOL_GPL(verity_dtr);
+EXPORT_SYMBOL_GPL(verity_ctr);   
 EXPORT_SYMBOL_GPL(verity_status);
 EXPORT_SYMBOL_GPL(verity_iterate_devices);
 EXPORT_SYMBOL_GPL(verity_io_hints);

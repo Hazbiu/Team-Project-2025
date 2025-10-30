@@ -19,6 +19,9 @@
 
 #define DM_VERITY_MAX_LEVELS		63
 
+
+
+
 enum verity_mode {
 	DM_VERITY_MODE_EIO,
 	DM_VERITY_MODE_LOGGING,
@@ -127,5 +130,13 @@ extern bool dm_is_verity_target(struct dm_target *ti);
 extern int dm_verity_get_mode(struct dm_target *ti);
 extern int dm_verity_get_root_digest(struct dm_target *ti, u8 **root_digest,
 				     unsigned int *digest_size);
+
+extern int verity_preresume(struct dm_target *ti); 					 
+extern int verity_ctr(struct dm_target *ti, unsigned int argc, char **argv);
+extern int verity_map(struct dm_target *ti, struct bio *bio);
+extern void verity_status(struct dm_target *ti, status_type_t type,
+                          unsigned int status_flags, char *result,
+                          unsigned int maxlen);
+
 
 #endif /* DM_VERITY_H */
