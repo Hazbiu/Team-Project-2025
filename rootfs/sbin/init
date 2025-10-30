@@ -1,0 +1,7 @@
+#!/bin/sh
+echo "[init] Starting minimal boot..."
+mount -t proc none /proc
+mount -t sysfs none /sys
+mount -t devtmpfs none /dev
+echo "[init] Boot OK. Dropping to shell."
+exec /bin/sh

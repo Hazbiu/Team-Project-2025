@@ -67,6 +67,11 @@ KEYS_DIR="${ROOT_DIR}/keys"
 WORKSPACE="/workspace"
 ROOTFS_DIR="${ROOT_DIR}/rootfs"
 ROOTFS_IMG="${BOOT_DIR}/rootfs.img"
+# Use a unified disk with 2 partitions: vda1=boot, vda2=rootfs
+DISK_IMG="${BOOT_DIR}/disk.img"
+
+# Boot mode switch: "simple" or "verity"
+BOOT_MODE=${BOOT_MODE:-verity}
 
 # --- FLEXIBLE ROOT DEVICE SETTINGS ---
 ROOT_PARTNUM=${ROOT_PARTNUM:-1}     # default partition number
@@ -159,74 +164,85 @@ sudo --preserve-env=ROOT_DIR,BOOT_DIR,KEYS_DIR,ROOTFS_DIR bash "${ROOT_DIR}/buil
 # export ROOT_DIR BOOT_DIR KEYS_DIR
 # bash "${ROOT_DIR}/build/initramfs.sh"
 
-# ==========================================================
-#  COPY NEWLY BUILT MODULE INTO ROOTFS
-# ==========================================================
-echo "[7.5/10] Copying new dm-verity-signed module into rootfs..."
-
-MODULE_SRC_PATH="${ROOT_DIR}/linux-6.6/drivers/md/dm/dm-verity-signed.ko"
-
-if [ -f "$MODULE_SRC_PATH" ]; then
-  # Determine the destination path inside the rootfs
-  # We assume a fixed kernel release for simplicity
-  KERNEL_RELEASE="6.18.0-rc2" # <--- IMPORTANT: SET THIS TO YOUR KERNEL'S RELEASE NAME
-  MODULE_SRC_PATH="/home/ioana/Team-Project-2025/linux/drivers/md/dm/dm-verity-signed.ko"
-  sudo mkdir -p "$MODULE_DEST_DIR"
-  sudo cp "$MODULE_SRC_PATH" "$MODULE_DEST_DIR/"
-  echo "Copied dm-verity-signed.ko to ${MODULE_DEST_DIR}"
-else
-  echo "WARNING: Module not found at ${MODULE_SRC_PATH} - Skipping copy."
-fi
-read -p "Step 7.5 complete. Press ENTER to continue to step 8..."
-
-
-
 # --- Package rootfs into ext4 image (flexible partition) ---
 echo "[8/10] Packaging rootfs into ext4 image (partition ${ROOT_DEV_BASE}${ROOT_PARTNUM})..."
 IMG_MB=512
 dd if=/dev/zero of="$ROOTFS_IMG" bs=1M count=$IMG_MB
 
-parted -s "$ROOTFS_IMG" mklabel msdos
+parted -s "$DISK_IMG" mklabel msdos
+parted -s "$DISK_IMG" mkpart primary ext4 1MiB "${BOOT_MB}MiB"
+parted -s "$DISK_IMG" mkpart primary ext4 "${BOOT_MB}MiB" 100%
 
-# Create dummy partitions up to the desired partition number
-for ((i=1; i<ROOT_PARTNUM; i++)); do
-  start=$((1 + (i-1)*2))
-  end=$((start + 1))
-  parted -s "$ROOTFS_IMG" mkpart primary ext4 "${start}MiB" "${end}MiB"
-done
+LOOP=$(sudo losetup -f --show -P "$DISK_IMG")
 
-# Real root partition filling the rest
-parted -s "$ROOTFS_IMG" mkpart primary ext4 "$((ROOT_PARTNUM*2))MiB" 100%
+cleanup_loop() {
+  set +e
+  sudo umount /mnt/rootfs_build 2>/dev/null || true
+  sudo umount /mnt/boot_build  2>/dev/null || true
+  sudo losetup -d "$LOOP" 2>/dev/null || true
+  set -e
+}
+trap cleanup_loop EXIT
 
-# Attach loop device
-LOOP=$(sudo losetup -f --show -P "$ROOTFS_IMG")
+echo "[8/10] Formatting partitions..."
+sudo mkfs.ext4 -F -L boot   "${LOOP}p1" >/dev/null
+sudo mkfs.ext4 -F -L rootfs "${LOOP}p2" >/dev/null
 
-# Make filesystem slightly smaller to leave room for dm-verity tree (~8 MB)
-FS_SIZE_MB=$((IMG_MB - 24))
+FS_SIZE_MB=$((ROOT_MB - 24))
+sudo resize2fs "${LOOP}p2" "${FS_SIZE_MB}M" >/dev/null
 
-echo "Creating ext4 filesystem (${FS_SIZE_MB}MB data area + ${IMG_MB}MB total image)..."
-
-# Create filesystem normally
-sudo mkfs.ext4 -F -L rootfs "${LOOP}p${ROOT_PARTNUM}" >/dev/null
-
-# Shrink filesystem to leave free space for verity hash tree
-sudo resize2fs "${LOOP}p${ROOT_PARTNUM}" "${FS_SIZE_MB}M" >/dev/null
-
-# Mount and populate
+echo "[8/10] Populating rootfs on p2..."
 sudo mkdir -p /mnt/rootfs_build
-sudo mount "${LOOP}p${ROOT_PARTNUM}" /mnt/rootfs_build
+sudo mount "${LOOP}p2" /mnt/rootfs_build
 sudo cp -a "$ROOTFS_DIR"/* /mnt/rootfs_build
+sudo sync
 sudo umount /mnt/rootfs_build
-sudo losetup -d "$LOOP"
+sudo e2fsck -fy "${LOOP}p2" >/dev/null || true
 
-echo "RootFS image ready at $ROOTFS_IMG (root partition ${ROOT_DEV_BASE}${ROOT_PARTNUM})"
+echo "[8/10] Populating boot on p1..."
+sudo mkdir -p /mnt/boot_build
+sudo mount "${LOOP}p1" /mnt/boot_build
+sudo cp -a "${BOOT_DIR}/kernel_image.bin" "${BOOT_DIR}/initramfs.cpio.gz" /mnt/boot_build/
+sudo cp -a "${BOOT_DIR}/kernel_image.sig" 2>/dev/null || true
+sudo sync
+sudo umount /mnt/boot_build
+
+sudo losetup -d "$LOOP"
+trap - EXIT
+
+echo "[8.1] Verifying disk partition layout..."
+sudo fdisk -l "$DISK_IMG" || true
+echo "[8.2] Probing filesystems inside the image..."
+sudo blkid -p -o full -u filesystem "$DISK_IMG" || true
+echo "Disk ready at $DISK_IMG (vda1=boot, vda2=rootfs)"
 read -p "Step 8 complete. Press ENTER to continue to step 9..."
 
-# --- Sign the rootfs image ---
+# ==============================================================
+# [FIXED STEP 9]  Sign & generate PKCS#7 metadata safely
+# ==============================================================
+
 echo "[9/10] Signing rootfs image..."
 openssl dgst -sha256 -sign "${BOOT_DIR}/bl_private.pem" \
   -out "${BOOT_DIR}/rootfs.img.sig" \
-  "$ROOTFS_IMG"
+  "$DISK_IMG"
+
+echo "[9.1] Creating PKCS#7 signature for verity metadata..."
+
+META_FILE="${BOOT_DIR}/verity_metadata.txt"
+echo "dm-verity metadata root hash, salt, etc. placeholder" > "$META_FILE"
+
+if [ ! -f "${BOOT_DIR}/bl_cert.pem" ] || [ ! -f "${BOOT_DIR}/bl_cert.key" ]; then
+  openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+    -keyout "${BOOT_DIR}/bl_cert.key" \
+    -out "${BOOT_DIR}/bl_cert.pem" \
+    -subj "/CN=verity-signed/"
+fi
+
+openssl smime -sign -binary -in "$META_FILE" \
+  -signer "${BOOT_DIR}/bl_cert.pem" -inkey "${BOOT_DIR}/bl_cert.key" \
+  -noattr -outform DER -out "${BOOT_DIR}/verity_metadata.p7s"
+
+echo "PKCS#7 metadata signature created at ${BOOT_DIR}/verity_metadata.p7s"
 
 
 # --- Generate PKCS#7-signed metadata for dm-verity-signed ---
@@ -249,24 +265,8 @@ openssl smime -sign -binary -in "$META_FILE" \
 echo "PKCS#7 metadata signature created at ${BOOT_DIR}/verity_metadata.p7s"
 
 # --- Generate dm-verity metadata using external script ---
-export ROOT_DIR BOOT_DIR ROOTFS_IMG
+export ROOT_DIR BOOT_DIR
 bash "${ROOT_DIR}/build/verity.sh"
+
 read -p "Step 9 complete. Press ENTER to continue to step 10..."
 
-# --- Launch in QEMU ---
-echo "[10/10] Launching Secure Boot Demo in QEMU..."
-META_FILE="${BOOT_DIR}/rootfs.verity.meta"
-ROOTHASH=$(grep '^roothash=' "$META_FILE" | cut -d= -f2)
-SALT=$(grep '^salt=' "$META_FILE" | cut -d= -f2)
-OFFSET=$(grep '^offset=' "$META_FILE" | cut -d= -f2)
-
-echo "[10/10] Launching Secure Boot Demo in QEMU with dm-verity..."
-
-
-# Execute the primary bootloader, which will start the secondary bootloader,
-# which then executes QEMU via execvp.
-"${BOOT_DIR}/primary_bootloader" \
-    --kernel "${BOOT_DIR}/kernel_image.bin" \
-    --secondary "${BOOT_DIR}/secondary_bootloader.bin" \
-    --signature "${BOOT_DIR}/secondary_bootloader.sig" \
-    --append "root=/dev/mapper/verity-root modules_load=dm-verity dm-mod.create='verity-root,,,ro,0 512 verity-signed /dev/vda verity_metadata.p7s bl_cert.pem' console=ttyS0"

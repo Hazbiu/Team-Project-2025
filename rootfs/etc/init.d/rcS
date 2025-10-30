@@ -1,0 +1,2 @@
+#!/bin/sh
+echo "[rcS] Base system booting..."

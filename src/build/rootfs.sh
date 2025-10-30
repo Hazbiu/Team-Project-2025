@@ -1,56 +1,78 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-# --- Build minimal root filesystem (once) ---
-echo "[8/10] Building minimal root filesystem..."
-if [ ! -d "$ROOTFS_DIR" ]; then
-  sudo debootstrap --arch=amd64 bookworm "$ROOTFS_DIR" http://deb.debian.org/debian/
-  echo "RootFS created at $ROOTFS_DIR"
+echo "[ROOTFS] Building minimal root filesystem (simple mode)..."
+
+# Base locations
+BUILD_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOTFS_DIR="$BUILD_DIR/Binaries/rootfs"
+OUTPUT_IMG="$BUILD_DIR/Binaries/rootfs.img"
+
+echo "[ROOTFS] Rootfs directory: $ROOTFS_DIR"
+mkdir -p "$ROOTFS_DIR"
+
+# 1) Install Debian base once
+if [ ! -d "$ROOTFS_DIR/etc" ]; then
+  sudo debootstrap \
+    --arch=amd64 \
+    --include=systemd,systemd-sysv,udev,passwd,login,sudo,net-tools,iproute2,ifupdown,openssh-server,vim,less \
+    bookworm "$ROOTFS_DIR" http://deb.debian.org/debian/
+  echo "✅ Base Debian installed."
 fi
 
-# --- ALWAYS configure users (even if rootfs already existed) ---
-echo "[8.1] Configuring users inside rootfs..."
+echo "[ROOTFS] Basic configuration..."
 
-# Mount essential filesystems for chroot
-sudo mount --bind /dev  "$ROOTFS_DIR/dev"
-sudo mount --bind /dev/pts "$ROOTFS_DIR/dev/pts"
-sudo mount --bind /proc "$ROOTFS_DIR/proc"
-sudo mount --bind /sys  "$ROOTFS_DIR/sys"
+sudo chroot "$ROOTFS_DIR" bash -c "
+set -e
+export DEBIAN_FRONTEND=noninteractive
 
-sudo chroot "$ROOTFS_DIR" bash -c '
-  set -e
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y passwd login sudo
+echo 'root:root' | chpasswd
 
-  # Unlock and set root password
-  passwd -d root || true
-  echo "root:root" | chpasswd
-  passwd -u root || true
+if ! id -u keti &>/dev/null; then
+  useradd -m -s /bin/bash keti
+fi
+echo 'keti:keti' | chpasswd
+usermod -aG sudo keti
 
-  # Create user "keti" with sudo access
-  if ! id -u keti &>/dev/null; then
-    useradd -m -s /bin/bash keti
-  fi
-  echo "keti:keti" | chpasswd
-  usermod -aG sudo keti
+echo 'secureboot-demo' > /etc/hostname
 
-  # Enable serial console login (for QEMU)
-  systemctl enable serial-getty@ttyS0.service || true
+cat > /etc/network/interfaces <<EOF
+auto lo
+iface lo inet loopback
 
-  apt-get clean
-'
+auto eth0
+iface eth0 inet dhcp
+EOF
 
-# Clean unmount
-sudo umount "$ROOTFS_DIR/dev/pts" || true
-sudo umount "$ROOTFS_DIR/dev"     || true
-sudo umount "$ROOTFS_DIR/proc"    || true
-sudo umount "$ROOTFS_DIR/sys"     || true
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+"
 
-echo "User setup complete (root/root and keti/keti)"
+echo "✅ Basic config done."
 
-# --- Commented out potential /mnt/d sync logic (Windows mount path) ---
-# DEST_PATH="/mnt/d/Team-Project-2025/src/rootfs"
-# mkdir -p "$DEST_PATH"
-# cp -r "$ROOTFS_DIR"/* "$DEST_PATH/" 2>/dev/null || true
-# echo "RootFS copied to Windows mount: $DEST_PATH"
+echo "[ROOTFS] Creating ext4 disk image..."
+
+sudo rm -rf "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" "$ROOTFS_DIR/dev"
+mkdir -p "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" "$ROOTFS_DIR/dev"
+
+# Determine image size with extra space for dm-verity hash tree
+SIZE_MB=$(sudo du -s --block-size=1M "$ROOTFS_DIR" 2>/dev/null | awk '{print int($1*1.4)+132}')
+
+echo "Allocating ${SIZE_MB}MB..."
+
+truncate -s "${SIZE_MB}M" "$OUTPUT_IMG"
+mkfs.ext4 -L rootfs "$OUTPUT_IMG" >/dev/null
+
+
+sudo mkdir -p /mnt/rootfs-img
+sudo mount "$OUTPUT_IMG" /mnt/rootfs-img
+
+sudo rsync -aHAX "$ROOTFS_DIR"/ /mnt/rootfs-img/
+
+sync
+sudo umount /mnt/rootfs-img 2>/dev/null || true
+sudo rmdir /mnt/rootfs-img 2>/dev/null || true
+
+echo "✅ rootfs.img created successfully."
+echo "📦 Image location: $OUTPUT_IMG"
+echo "🎉 DONE!"

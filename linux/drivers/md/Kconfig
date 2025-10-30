@@ -616,6 +616,33 @@ config DM_VERITY_FEC
 
 	  If unsure, say N.
 
+config DM_VERITY_SIGNED
+    tristate "dm-verity target with signed metadata verification"
+    depends on BLK_DEV_DM
+    help
+      Adds a dm-verity target that verifies the integrity of the
+      root filesystem using a signed metadata file and embedded
+      root hash verification before mount.
+
+
+config DM_VERITY_SIGNED
+	tristate "dm-verity target with signed metadata (verity-signed)"
+	depends on DM_VERITY && KEYS && PKCS7_MESSAGE_PARSER && X509_CERTIFICATE_PARSER && ASYMMETRIC_KEY_TYPE
+	select DM_INIT
+	help
+	  This option adds a new Device Mapper target called "verity-signed".
+
+	  The 'verity-signed' target verifies a PKCS#7-signed metadata blob
+	  that contains all dm-verity parameters (root hash, devices, salt,
+	  options, etc.) using the kernel’s trusted keyring. It then creates
+	  a standard 'verity' target from those verified parameters.
+
+	  This allows shorter kernel command lines (using meta=... syntax)
+	  and enforces signature checking of verity configuration data.
+
+	  If unsure, say N.
+
+
 config DM_SWITCH
 	tristate "Switch target support (EXPERIMENTAL)"
 	depends on BLK_DEV_DM

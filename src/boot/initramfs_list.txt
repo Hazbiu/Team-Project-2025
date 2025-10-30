@@ -5,9 +5,15 @@ dir /bin 755 0 0
 dir /sbin 755 0 0
 dir /etc 755 0 0
 dir /newroot 755 0 0
+dir /boot 755 0 0
+dir /tmp 1777 0 0
 file /init /home/keti/Team-Project-2025/src/boot/initramfs/init 755 0 0
 file /bin/busybox /home/keti/Team-Project-2025/src/boot/initramfs/bin/busybox 755 0 0
 slink /bin/sh /bin/busybox 777 0 0
 slink /sbin/mount /bin/busybox 777 0 0
 slink /sbin/switch_root /bin/busybox 777 0 0
 slink /sbin/mdev /bin/busybox 777 0 0
+file /sbin/dmsetup /home/keti/Team-Project-2025/src/boot/initramfs/sbin/dmsetup 755 0 0
+file /sbin/veritysetup /home/keti/Team-Project-2025/src/boot/initramfs/sbin/veritysetup 755 0 0
+file /sbin/blkid /home/keti/Team-Project-2025/src/boot/initramfs/sbin/blkid 755 0 0
+file /sbin/lsblk /home/keti/Team-Project-2025/src/boot/initramfs/sbin/lsblk 755 0 0
