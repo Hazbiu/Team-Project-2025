@@ -22,7 +22,6 @@
 #include <linux/string.h>
 #include <linux/jump_label.h>
 #include <linux/security.h>
-#include <linux/device-mapper.h> 
 
 #define DM_MSG_PREFIX			"verity"
 
@@ -68,9 +67,6 @@ struct dm_verity_prefetch_work {
 	sector_t block;
 	unsigned int n_blocks;
 };
-
-
-
 
 /*
  * Auxiliary structure appended to each dm-bufio buffer. If the value
@@ -758,7 +754,7 @@ int verity_map(struct dm_target *ti, struct bio *bio)
 	return DM_MAPIO_SUBMITTED;
 }
 
-void verity_postsuspend(struct dm_target *ti)
+static void verity_postsuspend(struct dm_target *ti)
 {
 	struct dm_verity *v = ti->private;
 	flush_workqueue(v->verify_wq);
@@ -915,7 +911,7 @@ void verity_status(struct dm_target *ti, status_type_t type,
 	}
 }
 
-int verity_prepare_ioctl(struct dm_target *ti, struct block_device **bdev,
+static int verity_prepare_ioctl(struct dm_target *ti, struct block_device **bdev,
 				unsigned int cmd, unsigned long arg,
 				bool *forward)
 {
@@ -928,7 +924,7 @@ int verity_prepare_ioctl(struct dm_target *ti, struct block_device **bdev,
 	return 0;
 }
 
-int verity_iterate_devices(struct dm_target *ti,
+static int verity_iterate_devices(struct dm_target *ti,
 				  iterate_devices_callout_fn fn, void *data)
 {
 	struct dm_verity *v = ti->private;
@@ -936,7 +932,7 @@ int verity_iterate_devices(struct dm_target *ti,
 	return fn(ti, v->data_dev, 0, ti->len, data);
 }
 
-void verity_io_hints(struct dm_target *ti, struct queue_limits *limits)
+static void verity_io_hints(struct dm_target *ti, struct queue_limits *limits)
 {
 	struct dm_verity *v = ti->private;
 
@@ -992,7 +988,7 @@ static inline void verity_free_sig(struct dm_verity *v)
 
 #endif /* CONFIG_SECURITY */
 
-void verity_dtr(struct dm_target *ti)
+static void verity_dtr(struct dm_target *ti)
 {
 	struct dm_verity *v = ti->private;
 
@@ -1708,7 +1704,7 @@ static struct target_type verity_target = {
 	.preresume	= verity_preresume,
 #endif /* CONFIG_SECURITY */
 };
-// module_dm(verity);
+module_dm(verity);
 
 /*
  * Check whether a DM target is a verity target.
@@ -1723,157 +1719,3 @@ MODULE_AUTHOR("Mandeep Baines <msb@chromium.org>");
 MODULE_AUTHOR("Will Drewry <wad@chromium.org>");
 MODULE_DESCRIPTION(DM_NAME " target for transparent disk integrity checking");
 MODULE_LICENSE("GPL");
-
-EXPORT_SYMBOL_GPL(verity_map);
-EXPORT_SYMBOL_GPL(verity_dtr);
-EXPORT_SYMBOL_GPL(verity_ctr);   
-EXPORT_SYMBOL_GPL(verity_status);
-EXPORT_SYMBOL_GPL(verity_iterate_devices);
-EXPORT_SYMBOL_GPL(verity_io_hints);
-EXPORT_SYMBOL_GPL(verity_postsuspend);
-#ifdef CONFIG_SECURITY
-EXPORT_SYMBOL_GPL(verity_preresume);
-#endif
-EXPORT_SYMBOL_GPL(verity_prepare_ioctl);
-
-// ============================================================================
-//                          dm-verity-signed integration
-// ============================================================================
-
-#include <linux/key.h>
-#include <linux/cred.h>
-#include <linux/verification.h>
-
-/*
- * Simple example: signed variant of verity that requires signature verification
- * before calling into normal dm-verity flow.
- */
-
-struct verity_signed_data {
-	char *sig_file;
-	char *cert_file;
-};
-
-/* Mock signature verification; replace with real PKCS#7 later */
-static int verity_signed_verify_metadata(const char *sig_file, const char *cert_file)
-{
-	if (!sig_file || !cert_file) {
-		pr_err("dm-verity-signed: Missing signature or certificate file\n");
-		return -EINVAL;
-	}
-
-	pr_info("dm-verity-signed: Verifying %s using cert %s (mock pass)\n",
-		sig_file, cert_file);
-
-	/* TODO: Replace this with pkcs7_verify_message() or kernel_verify_pkcs7_signature() */
-	return 0;
-}
-
-/*
- * Constructor: same as verity_ctr, but adds signature verification.
- */
-static int verity_signed_ctr(struct dm_target *ti, unsigned int argc, char **argv)
-{
-	struct verity_signed_data *vsd;
-	int ret;
-
-	vsd = kzalloc(sizeof(*vsd), GFP_KERNEL);
-	if (!vsd)
-		return -ENOMEM;
-
-	ti->private = vsd;
-
-	/* Look for extra args: sig_file= and cert_file= */
-	for (unsigned int i = 0; i < argc; i++) {
-		if (strncmp(argv[i], "sig_file=", 9) == 0)
-			vsd->sig_file = kstrdup(argv[i] + 9, GFP_KERNEL);
-		else if (strncmp(argv[i], "cert_file=", 10) == 0)
-			vsd->cert_file = kstrdup(argv[i] + 10, GFP_KERNEL);
-	}
-
-	ret = verity_signed_verify_metadata(vsd->sig_file, vsd->cert_file);
-	if (ret) {
-		ti->error = "Signature verification failed";
-		kfree(vsd->sig_file);
-		kfree(vsd->cert_file);
-		kfree(vsd);
-		return -EKEYREJECTED;
-	}
-
-	/* If verification passed, just call normal verity_ctr */
-	ret = verity_ctr(ti, argc, argv);
-	if (ret) {
-		ti->error = "Underlying dm-verity setup failed";
-		kfree(vsd->sig_file);
-		kfree(vsd->cert_file);
-		kfree(vsd);
-	}
-	return ret;
-}
-
-/*
- * Destructor: reuse verity_dtr but also free our additions
- */
-static void verity_signed_dtr(struct dm_target *ti)
-{
-	struct verity_signed_data *vsd = ti->private;
-	if (vsd) {
-		kfree(vsd->sig_file);
-		kfree(vsd->cert_file);
-		kfree(vsd);
-	}
-	verity_dtr(ti);
-}
-
-/*
- * Reuse verity_map and verity_status directly.
- */
-
-static struct target_type verity_signed_target = {
-	.name            = "verity-signed",
-	.features        = DM_TARGET_SINGLETON | DM_TARGET_IMMUTABLE,
-	.version         = {1, 0, 0},
-	.module          = THIS_MODULE,
-	.ctr             = verity_signed_ctr,
-	.dtr             = verity_signed_dtr,
-	.map             = verity_map,
-	.status          = verity_status,
-	.prepare_ioctl   = verity_prepare_ioctl,
-	.iterate_devices = verity_iterate_devices,
-	.io_hints        = verity_io_hints,
-#ifdef CONFIG_SECURITY
-	.preresume       = verity_preresume,
-#endif
-};
-
-/*
- * Replace module_dm(verity) with our own combined init/exit pair.
- */
-static int __init dm_verity_combined_init(void)
-{
-	int r;
-
-	r = dm_register_target(&verity_target);
-	if (r)
-		return r;
-
-	r = dm_register_target(&verity_signed_target);
-	if (r) {
-		dm_unregister_target(&verity_target);
-		return r;
-	}
-
-	pr_info("dm-verity: registered targets: verity, verity-signed\n");
-	return 0;
-}
-
-static void __exit dm_verity_combined_exit(void)
-{
-	dm_unregister_target(&verity_signed_target);
-	dm_unregister_target(&verity_target);
-}
-
-module_init(dm_verity_combined_init);
-module_exit(dm_verity_combined_exit);
-
-MODULE_DESCRIPTION("Device-mapper verity and verity-signed (secure rootfs)");

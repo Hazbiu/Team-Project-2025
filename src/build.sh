@@ -67,8 +67,6 @@ KEYS_DIR="${ROOT_DIR}/keys"
 WORKSPACE="/workspace"
 ROOTFS_DIR="${ROOT_DIR}/rootfs"
 ROOTFS_IMG="${BOOT_DIR}/rootfs.img"
-# Use a unified disk with 2 partitions: vda1=boot, vda2=rootfs
-DISK_IMG="${BOOT_DIR}/disk.img"
 
 # Boot mode switch: "simple" or "verity"
 BOOT_MODE=${BOOT_MODE:-verity}
@@ -205,7 +203,7 @@ sudo e2fsck -fy "${LOOP}p2" >/dev/null || true
 echo "[8/10] Populating boot on p1..."
 sudo mkdir -p /mnt/boot_build
 sudo mount "${LOOP}p1" /mnt/boot_build
-sudo cp -a "${BOOT_DIR}/kernel_image.bin" "${BOOT_DIR}/initramfs.cpio.gz" /mnt/boot_build/
+# sudo cp -a "${BOOT_DIR}/kernel_image.bin" "${BOOT_DIR}/initramfs.cpio.gz" /mnt/boot_build/
 sudo cp -a "${BOOT_DIR}/kernel_image.sig" 2>/dev/null || true
 sudo sync
 sudo umount /mnt/boot_build

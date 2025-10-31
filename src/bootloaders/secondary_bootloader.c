@@ -90,7 +90,7 @@ static int boot_qemu(const char *kernel, const char *rootfs_img, const char *roo
 
     char append[512];
     snprintf(append,sizeof append,
-             "console=ttyS0 root=%s ro rw", root_dev);
+             "console=ttyS0 root=/dev/mapper/verified_root ro rootwait");
 
     const char *argv[] = {
         "qemu-system-x86_64",
