@@ -90,8 +90,9 @@ static int boot_qemu(const char *kernel, const char *rootfs_img, const char *roo
 
     char append[512];
     snprintf(append, sizeof append,
-            "console=ttyS0 autoboot_device=/dev/vda2 root=/dev/mapper/verified_root ro rootwait"
-        root_dev);
+            "console=ttyS0 dm_verity_autoboot.autoboot_device=/dev/vda root=/dev/mapper/verified_root ro rootwait",
+            root_dev);
+
 
 
     printf("DEBUG: Kernel command line will be:\n  %s\n", append);
