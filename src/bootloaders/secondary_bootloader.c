@@ -84,13 +84,17 @@ static int gpt_find_rootfs_partition(const char *img) {
 static int boot_qemu(const char *kernel, const char *rootfs_img, const char *root_dev) {
 
     char drive[256];
-    snprintf(drive,sizeof drive,
+    snprintf(drive, sizeof drive,
              "file=%s,format=raw,if=virtio",
              rootfs_img);
 
     char append[512];
-    snprintf(append,sizeof append,
-             "console=ttyS0 root=/dev/mapper/verified_root ro rootwait");
+    snprintf(append, sizeof append,
+            "console=ttyS0 autoboot_device=/dev/vda2 root=/dev/mapper/verified_root ro rootwait"
+        root_dev);
+
+
+    printf("DEBUG: Kernel command line will be:\n  %s\n", append);
 
     const char *argv[] = {
         "qemu-system-x86_64",
@@ -107,7 +111,6 @@ static int boot_qemu(const char *kernel, const char *rootfs_img, const char *roo
     int st; waitpid(pid,&st,0);
     return WIFEXITED(st)?WEXITSTATUS(st):1;
 }
-
 // ---------- Main ----------
 int main(void) {
     printf("=====================================\n");
