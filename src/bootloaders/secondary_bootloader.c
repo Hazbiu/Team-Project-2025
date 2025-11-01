@@ -1,5 +1,5 @@
 // secondary_bootloader.c
-// Secure second-stage bootloader (DEV MODE, no signature, no initramfs).
+// Secure second-stage bootloader (NO INITRAMFS MODE, plain ext4 rootfs)
 // Build: gcc -O2 -Wall -Wextra -o secondary_bootloader secondary_bootloader.c -lcrypto
 
 #define _GNU_SOURCE
@@ -10,11 +10,13 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <errno.h>
+#include <endian.h>
 
 // ---------- Artifacts ----------
 static const char *KERNEL_IMG   = "kernel_image.bin";
-static const char *ROOTFS_IMG   = "rootfs.img";
-static const char *VERITY_META  = "rootfs.verity.meta"; // optional (ignored if missing)
+static const char *ROOTFS_IMG   = "../build/Binaries/rootfs.img";
+static const char *ROOT_HASH    = "../build/Binaries/metadata/root.hash";
+
 
 // ---------- GPT RootFS Detection ----------
 #pragma pack(push,1)
@@ -34,29 +36,28 @@ typedef struct {
 } GPTEntry;
 #pragma pack(pop)
 
-static int read_exact(FILE *f, void *buf, size_t n, uint64_t off) {
-    fseeko(f, off, SEEK_SET);
-    return fread(buf, 1, n, f) == n;
-}
-
-#include <endian.h>    // for le32toh/le64toh
-
 static int gpt_find_rootfs_partition(const char *img) {
     FILE *f = fopen(img, "rb");
     if (!f) return 0;
 
     GPTHeader h;
-    if (fseeko(f, 512, SEEK_SET) || fread(&h, 1, sizeof h, f) != sizeof h) { fclose(f); return 0; }
-    if (memcmp(h.signature, "EFI PART", 8) != 0) { fclose(f); return 0; }
+    if (fseeko(f, 512, SEEK_SET) || fread(&h, 1, sizeof h, f) != sizeof h) {
+        fclose(f);
+        return 0;
+    }
+    if (memcmp(h.signature, "EFI PART", 8) != 0) {
+        fclose(f);
+        return 0;
+    }
 
     uint32_t count  = le32toh(h.count);
     uint32_t entsz  = le32toh(h.entsz);
     uint64_t ent_lba= le64toh(h.ent_lba);
-    if (entsz < 128 || entsz > 1024 || count > 512) { fclose(f); return 0; } // sanity
+    if (entsz < 128 || entsz > 1024 || count > 512) {
+        fclose(f);
+        return 0;
+    }
 
-    // (Optional) validate header/array CRCs here
-
-    // Read entries one by one (handle entsz >= sizeof(GPTEntry))
     uint8_t buf[1024];
     for (uint32_t i = 0; i < count && i < 128; ++i) {
         off_t off = (off_t)ent_lba * 512 + (off_t)i * entsz;
@@ -66,7 +67,6 @@ static int gpt_find_rootfs_partition(const char *img) {
         uint64_t first = le64toh(e->first), last = le64toh(e->last);
         if (!first && !last) continue;
 
-        // Convert UTF-16LE name to ASCII for "rootfs"
         char name[37] = {0};
         for (int k = 0; k < 36; ++k) {
             uint16_t ch = ((const uint16_t*)e->name)[k];
@@ -74,47 +74,75 @@ static int gpt_find_rootfs_partition(const char *img) {
             if (!ch) break;
             name[k] = (ch < 0x80) ? (char)ch : '?';
         }
-        if (strcmp(name, "rootfs") == 0) { fclose(f); return (int)(i + 1); }
+
+        if (strcmp(name, "rootfs") == 0) {
+            fclose(f);
+            return (int)(i + 1);
+        }
     }
     fclose(f);
     return 0;
 }
 
+
+// ---------- Helpers ----------
+static void read_root_hash(char *buf, size_t sz) {
+    FILE *f = fopen(ROOT_HASH, "r");
+    if (!f) {
+        fprintf(stderr, "ERROR: Cannot open %s\n", ROOT_HASH);
+        exit(1);
+    }
+    if (!fgets(buf, sz, f)) {
+        fprintf(stderr, "ERROR: Cannot read root hash\n");
+        fclose(f);
+        exit(1);
+    }
+    fclose(f);
+    buf[strcspn(buf, "\n")] = 0; // strip newline
+}
+
+
 // ---------- QEMU Boot ----------
-static int boot_qemu(const char *kernel, const char *rootfs_img, const char *root_dev) {
-
+static int boot_qemu(const char *kernel, const char *rootfs_img, const char *root_dev, const char *root_hash) {
     char drive[256];
-    snprintf(drive,sizeof drive,
-             "file=%s,format=raw,if=virtio",
-             rootfs_img);
+    snprintf(drive, sizeof drive,
+             "file=%s,format=raw,if=virtio", rootfs_img);
 
-    char append[512];
-    snprintf(append,sizeof append,
-             "console=ttyS0 root=%s ro rw", root_dev);
+    // ✅ Plain ext4 rootfs boot (NO dm-verity)
+    char append[1024];
+    snprintf(append, sizeof append,
+        "console=ttyS0 root=%s rw rootfstype=ext4 init=/init",
+        root_dev
+    );
+
+    printf("\n[BOOT CMDLINE]\n%s\n\n", append);
 
     const char *argv[] = {
         "qemu-system-x86_64",
-        "-m","1024",
-        "-kernel",kernel,
-        "-drive",drive,
-        "-append",append,
+        "-m", "1024",
+        "-kernel", kernel,
+        "-drive", drive,
+        "-append", append,
         "-nographic",
         NULL
     };
 
-    pid_t pid=fork();
-    if(pid==0){ execvp(argv[0],(char*const*)argv); _exit(127); }
-    int st; waitpid(pid,&st,0);
-    return WIFEXITED(st)?WEXITSTATUS(st):1;
+    pid_t pid = fork();
+    if (pid == 0) { execvp(argv[0], (char *const *)argv); _exit(127); }
+    int st; waitpid(pid, &st, 0);
+    return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
 }
+
+
 
 // ---------- Main ----------
 int main(void) {
     printf("=====================================\n");
-    printf("   Bootloader (NO INITRAMFS MODE)    \n");
+    printf("   Bootloader (NO INITRAMFS MODE)\n");
     printf("=====================================\n");
 
-    printf("Skipping signature verification (DEV MODE).\n");
+    char root_hash[128] = {0};
+    read_root_hash(root_hash, sizeof(root_hash));
 
     const char *root_dev = "/dev/vda";
     int part = gpt_find_rootfs_partition(ROOTFS_IMG);
@@ -127,10 +155,11 @@ int main(void) {
         printf("No GPT partition named 'rootfs' found. Using raw image as /dev/vda.\n");
     }
 
+    printf("Root hash: %s\n", root_hash);
     printf("Press ENTER to boot kernel...\n");
     getchar();
 
-    int rc = boot_qemu(KERNEL_IMG, ROOTFS_IMG, root_dev);
+    int rc = boot_qemu(KERNEL_IMG, ROOTFS_IMG, root_dev, root_hash);
     printf("QEMU exited with code %d\n", rc);
     return rc;
 }

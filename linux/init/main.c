@@ -120,7 +120,7 @@ static char rootfs_loc_param[128] __initdata;
 static int __init parse_rootfs_loc(char *str)
 {
     if (str)
-        strlcpy(rootfs_loc_param, str, sizeof(rootfs_loc_param));
+        strscpy(rootfs_loc_param, str, sizeof(rootfs_loc_param));
     return 0;
 }
 early_param("rootfs_loc", parse_rootfs_loc);
@@ -128,7 +128,6 @@ early_param("rootfs_loc", parse_rootfs_loc);
 static int kernel_init(void *);
 void __init verity_autoconfig(void);
 void __init verity_autoconfig_cmdline_append(const char *extra);
-void __init verity_autoconfig(void);
 
 /*
  * Debug helper: via this flag we know that we are in 'early bootup code'
@@ -943,6 +942,29 @@ static void __init early_numa_node_init(void)
 #endif
 #endif
 }
+
+
+extern char rootfs_loc_param[];
+
+void __init verity_autoconfig(void)
+{
+    if (rootfs_loc_param[0] != '\0') {
+        pr_info("[verity] RootFS location parameter received: %s\n", rootfs_loc_param);
+
+        /*
+         * Force root to the dm-verity verified mapper device.
+         * The actual dm mapping is provided by the bootloader via cmdline.
+         */
+        verity_autoconfig_cmdline_append(" root=/dev/mapper/verity_root ro ");
+
+    } else {
+        pr_warn("[verity] WARNING: rootfs_loc NOT provided — not enabling dm-verity.\n");
+    }
+}
+
+
+
+
 
 asmlinkage __visible __init __no_sanitize_address __noreturn __no_stack_protector
 void start_kernel(void)
