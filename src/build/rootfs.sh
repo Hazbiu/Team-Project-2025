@@ -20,7 +20,12 @@ if [ ! -d "$ROOTFS_DIR/etc" ]; then
   echo "✅ Base Debian installed."
 fi
 
-echo "[ROOTFS] Basic configuration..."
+echo "[ROOTFS] Applying configuration..."
+
+# Bind mount required pseudo-filesystems
+sudo mount -t proc none "$ROOTFS_DIR/proc"
+sudo mount -t sysfs none "$ROOTFS_DIR/sys"
+sudo mount --bind /dev "$ROOTFS_DIR/dev"
 
 sudo chroot "$ROOTFS_DIR" bash -c "
 set -e
@@ -31,6 +36,7 @@ echo 'root:root' | chpasswd
 if ! id -u keti &>/dev/null; then
   useradd -m -s /bin/bash keti
 fi
+
 echo 'keti:keti' | chpasswd
 usermod -aG sudo keti
 
@@ -48,30 +54,32 @@ apt-get clean
 rm -rf /var/lib/apt/lists/*
 "
 
-echo "✅ Basic config done."
+# Unmount the pseudo-filesystems cleanly
+sudo umount "$ROOTFS_DIR/proc" || true
+sudo umount "$ROOTFS_DIR/sys" || true
+sudo umount "$ROOTFS_DIR/dev" || true
+
+echo "✅ Configuration done."
 
 echo "[ROOTFS] Creating ext4 disk image..."
 
-sudo rm -rf "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" "$ROOTFS_DIR/dev"
-mkdir -p "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" "$ROOTFS_DIR/dev"
-
-# Determine image size with extra space for dm-verity hash tree
-SIZE_MB=$(sudo du -s --block-size=1M "$ROOTFS_DIR" 2>/dev/null | awk '{print int($1*1.4)+132}')
-
+SIZE_MB=$(sudo du -s --block-size=1M "$ROOTFS_DIR" | awk '{print int($1*1.4)+132}')
 echo "Allocating ${SIZE_MB}MB..."
 
 truncate -s "${SIZE_MB}M" "$OUTPUT_IMG"
 mkfs.ext4 -L rootfs "$OUTPUT_IMG" >/dev/null
 
-
 sudo mkdir -p /mnt/rootfs-img
 sudo mount "$OUTPUT_IMG" /mnt/rootfs-img
 
-sudo rsync -aHAX "$ROOTFS_DIR"/ /mnt/rootfs-img/
+# Copy rootfs, excluding pseudo-filesystems
+sudo rsync -aHAX \
+  --exclude={"/proc/*","/sys/*","/dev/*","/run/*"} \
+  "$ROOTFS_DIR"/ /mnt/rootfs-img/
 
 sync
-sudo umount /mnt/rootfs-img 2>/dev/null || true
-sudo rmdir /mnt/rootfs-img 2>/dev/null || true
+sudo umount /mnt/rootfs-img
+sudo rmdir /mnt/rootfs-img
 
 echo "✅ rootfs.img created successfully."
 echo "📦 Image location: $OUTPUT_IMG"

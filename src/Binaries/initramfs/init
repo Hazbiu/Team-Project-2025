@@ -1,0 +1,24 @@
+#!/bin/sh
+set -e
+
+echo "[initramfs] Early boot starting..."
+
+# Mount essential kernel filesystems
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev
+
+echo "[initramfs] Verifying root filesystem image..."
+
+if ! sha256sum -c /rootfs.hash; then
+    echo "❌ RootFS verification FAILED!"
+    exec sh       # Drop to emergency shell
+fi
+
+echo "✅ RootFS verified OK."
+
+# Mount real root filesystem read-only
+mount -o ro -t ext4 /dev/vda /newroot
+
+echo "[initramfs] Switching to verified root..."
+exec switch_root /newroot /sbin/init

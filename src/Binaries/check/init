@@ -1,0 +1,22 @@
+#!/bin/sh
+
+# Make all BusyBox applets available
+/bin/busybox --install -s
+
+mount -t proc none /proc
+mount -t sysfs none /sys
+mount -t devtmpfs none /dev
+
+echo "[initramfs] Waiting for disk..."
+sleep 1
+
+echo "[initramfs] Mounting real rootfs..."
+mount -o rw /dev/sda /mnt 2>/dev/null || mount -o rw /dev/vda /mnt 2>/dev/null
+
+if [ ! -x /mnt/sbin/init ]; then
+    echo "!! Rootfs mount failed OR /sbin/init missing."
+    exec sh
+fi
+
+echo "[initramfs] Switching root..."
+exec switch_root /mnt /sbin/init

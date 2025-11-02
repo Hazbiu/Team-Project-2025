@@ -1,0 +1,23 @@
+#!/bin/sh
+
+mount -t proc none /proc
+mount -t sysfs none /sys
+mount -t devtmpfs devtmpfs /dev
+
+echo "[initramfs] Waiting for disk..."
+sleep 1
+
+echo "[initramfs] Mounting real rootfs..."
+mount -o rw /dev/sda /mnt 2>/dev/null || mount -o rw /dev/vda /mnt 2>/dev/null
+
+if [ ! -x /mnt/lib/systemd/systemd ]; then
+    echo "!! /lib/systemd/systemd missing on rootfs!"
+    exec sh
+fi
+
+mount --move /proc /mnt/proc
+mount --move /sys /mnt/sys
+mount --move /dev /mnt/dev
+
+echo "[initramfs] Switching root to systemd..."
+exec switch_root /mnt /lib/systemd/systemd
