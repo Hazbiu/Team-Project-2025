@@ -8,7 +8,7 @@ echo "[initramfs] Waiting for disk..."
 sleep 1
 
 echo "[initramfs] Mounting real rootfs..."
-mount -o rw /dev/sda /mnt 2>/dev/null || mount -o rw /dev/vda /mnt 2>/dev/null
+mount -o rw /dev/sda1 /mnt 2>/dev/null || mount -o rw /dev/vda1 /mnt 2>/dev/null
 
 if [ ! -x /mnt/lib/systemd/systemd ]; then
     echo "!! /lib/systemd/systemd missing on rootfs!"
