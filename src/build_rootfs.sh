@@ -28,8 +28,7 @@ rm -f "$IMG"
 sudo mv "$WORK/disk.raw" "$IMG"
 sudo chown $USER:$USER "$IMG"
 
-
-echo "[*] Mounting rootfs to set root password..."
+echo "[*] Mounting rootfs to apply modifications..."
 LOOP=$(sudo losetup --find --show --partscan "$IMG")
 sudo mount ${LOOP}p1 "$WORK"
 
@@ -39,6 +38,9 @@ echo "root:root" | sudo chroot "$WORK" chpasswd
 echo "[*] Ensuring /sbin/init → systemd..."
 sudo ln -sf /usr/lib/systemd/systemd "$WORK/sbin/init" || \
 sudo ln -sf /lib/systemd/systemd "$WORK/sbin/init"
+
+echo "[*] Disabling /boot/efi mount (avoids emergency mode)..."
+sudo sed -i 's|^[^#].*boot/efi|# &|' "$WORK/etc/fstab"
 
 echo "[*] Cleanup..."
 sudo umount "$WORK"
