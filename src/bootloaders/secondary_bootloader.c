@@ -120,15 +120,19 @@ int main(void) {
 
     printf("Skipping signature verification (DEV MODE).\n");
 
+    // We always want to conceptually boot /dev/vda (whole disk)
+    // because that's what contains the signed dm-verity footer.
     const char *root_dev = "/dev/vda";
+
+    // We still scan GPT so we can brag in the presentation,
+    // but we won't print /dev/vda1 anymore.
     int part = gpt_find_rootfs_partition(ROOTFS_IMG);
     if (part > 0) {
-        static char devbuf[32];
-        snprintf(devbuf, sizeof devbuf, "/dev/vda%d", part);
-        root_dev = devbuf;
-        printf("Detected GPT rootfs partition: %s\n", root_dev);
+        printf("Found GPT partition named 'rootfs' (partition %d).\n", part);
+        printf("(Kernel will still verify and boot from the whole disk /dev/vda.)\n");
     } else {
-        printf("No GPT partition named 'rootfs' found. Using raw image as /dev/vda.\n");
+        printf("No GPT partition named 'rootfs' found.\n");
+        printf("Using whole disk /dev/vda.\n");
     }
 
     printf("Press ENTER to boot kernel...\n");
@@ -136,10 +140,10 @@ int main(void) {
 
     printf("\n=== ABOUT TO LAUNCH QEMU ===\n");
     printf("Kernel: %s\n", KERNEL_IMG);
-    printf("Rootfs: %s\n", ROOTFS_IMG);
-    printf("Root device: %s\n", root_dev);
+    printf("Rootfs image (virtio as /dev/vda): %s\n", ROOTFS_IMG);
+    printf("Root block for kernel verity check: %s\n", root_dev);
     printf("\nPress ENTER again to continue to QEMU...\n");
-    getchar(); 
+    getchar();
 
     int rc = boot_qemu(KERNEL_IMG, ROOTFS_IMG, root_dev);
     printf("QEMU exited with code %d\n", rc);
