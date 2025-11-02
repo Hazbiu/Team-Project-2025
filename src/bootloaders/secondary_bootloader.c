@@ -12,9 +12,9 @@
 #include <errno.h>
 
 // ---------- Artifacts ----------
-static const char *KERNEL_IMG   = "kernel_image.bin";
-static const char *ROOTFS_IMG   = "rootfs.img";
-static const char *VERITY_META  = "rootfs.verity.meta"; // optional (ignored if missing)
+static const char *KERNEL_IMG   = "/home/tomislav/Team-Project-2025/src/bootloaders/kernel_image.bin";
+static const char *ROOTFS_IMG   = "/home/tomislav/Team-Project-2025/src/bootloaders/rootfs.img";
+static const char *VERITY_META  = "/home/tomislav/Team-Project-2025/src/bootloaders/rootfs.verity.meta"; // optional
 
 // ---------- GPT RootFS Detection ----------
 #pragma pack(push,1)

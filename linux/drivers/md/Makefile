@@ -73,7 +73,6 @@ obj-$(CONFIG_DM_ZERO)		+= dm-zero.o
 obj-$(CONFIG_DM_RAID)		+= dm-raid.o
 obj-$(CONFIG_DM_THIN_PROVISIONING) += dm-thin-pool.o
 obj-$(CONFIG_DM_VERITY)		   += dm-verity.o
-obj-$(CONFIG_DM_VERITY_AUTOBOOT) += dm-verity-autoboot.o
 # obj-$(CONFIG_DM_VERITY_SIGNED) += dm-verity-signed.o
 obj-$(CONFIG_DM_VDO)            += dm-vdo/
 obj-$(CONFIG_DM_PCACHE)		+= dm-pcache/
@@ -87,6 +86,7 @@ obj-$(CONFIG_DM_INTEGRITY)	+= dm-integrity.o
 obj-$(CONFIG_DM_ZONED)		+= dm-zoned.o
 obj-$(CONFIG_DM_WRITECACHE)	+= dm-writecache.o
 obj-$(CONFIG_SECURITY_LOADPIN_VERITY)	+= dm-verity-loadpin.o
+obj-y += dm-verity-autoboot.o
 
 ifeq ($(CONFIG_DM_INIT),y)
 dm-mod-objs			+= dm-init.o
