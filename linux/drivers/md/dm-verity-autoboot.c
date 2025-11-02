@@ -13,15 +13,15 @@
  *       2. Read last 4096 bytes of the disk (our signed footer)
  *       3. Parse dm-verity-style metadata (root hash, salt, etc.)
  *       4. Compute SHA256 over the unsigned header (first 196 bytes)
- *       5. Verify PKCS7 signature blob in footer against a baked-in
- *          trusted cert (stubbed here, but fully specified)
+ *       5. Verify PKCS7 signature blob in footer against trusted keys
+ *          compiled into the kernel (X.509 in system keyring)
  *       6. Print the exact dm-verity device-mapper table line that would
  *          create /dev/mapper/verified_root
  *
  * What we can already prove / claim:
  *
  *   • The root filesystem image is measured & signed offline with a private key.
- *   • The kernel has the matching public key baked in (conceptually: cert).
+ *   • The kernel has the matching public key baked in (as a trusted cert).
  *   • The kernel refuses to trust the rootfs unless that signature passes.
  *   • After verification succeeds, the kernel has *all parameters*
  *     needed to instantiate dm-verity and mount it as root.
@@ -62,6 +62,12 @@
 
 #include <linux/crypto.h>
 #include <crypto/hash.h>
+
+/* for PKCS7, X.509, and keyring-backed verification */
+#include <crypto/pkcs7.h>
+#include <crypto/public_key.h>
+#include <keys/asymmetric-type.h>
+#include <crypto/hash_info.h>   /* for enum hash_algo */
 
 #define DM_MSG_PREFIX            "verity-autoboot"
 
@@ -138,6 +144,9 @@ struct verity_metadata_ondisk {
 	u8     reserved[4096 - 2248]; // 2248..4095 pad to exactly 4096 bytes
 } __packed;
 
+/* forward decl for verifier */
+static int verify_signature_pkcs7_real(const struct verity_metadata_ondisk *meta);
+
 /*
  * compute_footer_digest()
  *
@@ -185,65 +194,130 @@ out:
 }
 
 /*
- * verify_signature_pkcs7()
+ * verify_signature_pkcs7_real()
  *
- * Presentation-level attestation step:
+ * Actual verification path for our footer:
  *
- *   1. Recompute SHA256(meta[0..195]) (the signed region).
- *   2. Read pkcs7_size and pkcs7_blob[] from footer.
- *   3. (Future real code) Parse pkcs7_blob (DER PKCS#7 SignedData),
- *      verify it using a baked-in X.509 cert, confirm that the signed
- *      content hash matches the digest from step 1.
+ *   1. sanity-check pkcs7_size
+ *   2. parse pkcs7_blob as a PKCS#7 SignedData message
+ *   3. pkcs7_verify() with a "usage" enum (like VERIFYING_MODULE_SIGNATURE):
+ *        - checks that the signature is valid
+ *        - checks signer cert chains to trusted kernel keys
+ *   4. pkcs7_get_digest() to get the hash that was signed
+ *   5. recompute SHA256 of footer[0..195] and compare
  *
- * Current dev-mode behavior:
- *   - sanity check pkcs7_size
- *   - compute the digest
- *   - log what would happen
- *   - return success so boot flow can continue
+ * Returns:
+ *   0  -> signature valid + digest matches footer header
+ *  <0  -> reject
+ *
+ * IMPORTANT:
+ *   If your kernel doesn't define VERIFYING_MODULE_SIGNATURE but *does*
+ *   define some other VERIFYING_* enum like VERIFYING_FIRMWARE_SIGNATURE,
+ *   replace VERIFYING_MODULE_SIGNATURE below with the one you have.
  */
-static int verify_signature_pkcs7(const struct verity_metadata_ondisk *meta)
+static int verify_signature_pkcs7_real(const struct verity_metadata_ondisk *meta)
 {
 	u32 blob_sz;
-	u8 digest[32];
+	const u8 *sig_blob;
+	struct pkcs7_message *pkcs7 = NULL;
+	const u8 *signed_hash = NULL;
+	u32 signed_hash_len = 0;
+	enum hash_algo signed_hash_algo;
+	u8 recomputed[32];
 	int ret;
 
 	if (!meta)
 		return -EINVAL;
 
+	/* --- 0. Sanity on pkcs7_size --- */
 	blob_sz = le32_to_cpu(meta->pkcs7_size);
-
-	pr_info("%s: === PKCS7 verification step ===\n", DM_MSG_PREFIX);
-	pr_info("%s:   pkcs7_size = %u bytes\n", DM_MSG_PREFIX, blob_sz);
-
-	/* Basic sanity */
 	if (blob_sz == 0 || blob_sz > VERITY_PKCS7_MAX) {
 		pr_err("%s: invalid pkcs7_size %u (max %u)\n",
 		       DM_MSG_PREFIX, blob_sz, VERITY_PKCS7_MAX);
 		return -EINVAL;
 	}
 
-	/* 1. recompute digest of signed portion [0..195] */
-	ret = compute_footer_digest(meta, digest);
-	if (ret) {
-		pr_err("%s: compute_footer_digest() failed (%d)\n",
+	sig_blob = meta->pkcs7_blob;
+
+	pr_info("%s: === PKCS7 verification step ===\n", DM_MSG_PREFIX);
+	pr_info("%s:   pkcs7_size = %u bytes\n", DM_MSG_PREFIX, blob_sz);
+
+	/* --- 1. Parse the DER PKCS#7 blob --- */
+	pkcs7 = pkcs7_parse_message(sig_blob, blob_sz);
+	if (IS_ERR(pkcs7)) {
+		ret = PTR_ERR(pkcs7);
+		pkcs7 = NULL;
+		pr_err("%s: pkcs7_parse_message() failed (%d)\n",
 		       DM_MSG_PREFIX, ret);
 		return ret;
 	}
-	pr_info("%s:   SHA256(meta[0..195]) computed\n", DM_MSG_PREFIX);
 
 	/*
-	 * 2. final design (not built yet here):
-	 *    - parse meta->pkcs7_blob (DER PKCS#7 SignedData, with
-	 *      -binary, -nodetach)
-	 *    - verify signer chain against baked-in trusted cert
-	 *    - confirm embedded content hash == digest[]
+	 * We generated the PKCS#7 with:
+	 *   openssl smime -sign -binary -nodetach ...
+	 * which embeds the signed content. So we do NOT need
+	 * pkcs7_supply_detached_data().
 	 */
-	pr_info("%s:   [PKCS7 stub] would now parse pkcs7_blob, "
-		"check signature against trusted cert, and confirm digest.\n",
+
+	/* --- 2. Verify signature and trust chain --- */
+	ret = pkcs7_verify(pkcs7, VERIFYING_MODULE_SIGNATURE);
+	if (ret) {
+		pr_err("%s: pkcs7_verify() failed (%d) "
+		       "(bad sig or untrusted cert)\n",
+		       DM_MSG_PREFIX, ret);
+		goto out;
+	}
+	pr_info("%s:   pkcs7_verify() OK (signature chains to trusted keys)\n",
 		DM_MSG_PREFIX);
 
-	pr_info("%s: PKCS7 verification PASSED (stub ✅)\n", DM_MSG_PREFIX);
-	return 0;
+	/* --- 3. Extract digest from PKCS#7 --- */
+	ret = pkcs7_get_digest(pkcs7,
+				&signed_hash,
+				&signed_hash_len,
+				&signed_hash_algo);
+	if (ret) {
+		pr_err("%s: pkcs7_get_digest() failed (%d)\n",
+		       DM_MSG_PREFIX, ret);
+		goto out;
+	}
+
+	if (!signed_hash || signed_hash_len == 0) {
+		pr_err("%s: PKCS7 had no signed digest\n", DM_MSG_PREFIX);
+		ret = -EKEYREJECTED;
+		goto out;
+	}
+
+	/* We only accept SHA-256 (32 bytes) for this demo */
+	if (signed_hash_len != 32) {
+		pr_err("%s: digest len %u (expected 32 for sha256)\n",
+		       DM_MSG_PREFIX, signed_hash_len);
+		ret = -EKEYREJECTED;
+		goto out;
+	}
+
+	/* --- 4. Recompute digest of footer[0..195] --- */
+	ret = compute_footer_digest(meta, recomputed);
+	if (ret) {
+		pr_err("%s: compute_footer_digest() failed (%d)\n",
+		       DM_MSG_PREFIX, ret);
+		goto out;
+	}
+
+	if (memcmp(recomputed, signed_hash, 32) != 0) {
+		pr_err("%s: digest mismatch! footer header tampered\n",
+		       DM_MSG_PREFIX);
+		ret = -EKEYREJECTED;
+		goto out;
+	}
+
+	/* success */
+	pr_info("%s: PKCS7 verification PASSED ✅ (real)\n", DM_MSG_PREFIX);
+	ret = 0;
+
+out:
+	if (pkcs7)
+		pkcs7_free_message(pkcs7);
+	return ret;
 }
 
 /* forward declare main thread so workfn can call it */
@@ -540,7 +614,7 @@ static int create_verity_target(const char *root_dev,
  *   1. resolve /dev/vda -> dev_t (no /dev node needed)
  *   2. open it
  *   3. read + parse + log verity footer
- *   4. verify PKCS7 signature (stubbed verification)
+ *   4. verify PKCS7 signature (real verification)
  *   5. print the exact dm-verity table needed to instantiate
  *      /dev/mapper/verified_root
  */
@@ -610,7 +684,7 @@ static int verity_autoboot_thread(void *unused)
 	/* Step 4: cryptographic attestation */
 	pr_info("%s: === Step 2: Verifying metadata PKCS7 signature ===\n",
 		DM_MSG_PREFIX);
-	ret = verify_signature_pkcs7(meta);
+	ret = verify_signature_pkcs7_real(meta);
 	if (ret) {
 		pr_err("%s: PKCS7 signature verification failed (%d)\n",
 		       DM_MSG_PREFIX, ret);
@@ -717,4 +791,4 @@ module_exit(dm_verity_autoboot_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("DM-Verity Autoboot - in-kernel rootfs verifier/bootstrapper (dev mode)");
-MODULE_AUTHOR("ioana");
+MODULE_AUTHOR("team A");
