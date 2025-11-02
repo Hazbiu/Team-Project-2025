@@ -14,7 +14,7 @@
 // ---------- Artifacts ----------
 static const char *KERNEL_IMG   = "kernel_image.bin";
 static const char *ROOTFS_IMG   = "rootfs.img";
-static const char *VERITY_META  = "rootfs.verity.meta"; // optional (ignored if missing)
+// static const char *VERITY_META  = "rootfs.verity.meta"; // optional (ignored if missing)
 
 // ---------- GPT RootFS Detection ----------
 #pragma pack(push,1)
@@ -90,8 +90,8 @@ static int boot_qemu(const char *kernel, const char *rootfs_img, const char *roo
 
     char append[512];
     snprintf(append, sizeof append,
-            "console=ttyS0 dm_verity_autoboot.autoboot_device=/dev/vda root=/dev/mapper/verified_root ro rootwait",
-            root_dev);
+         "console=ttyS0 dm_verity_autoboot.autoboot_device=/dev/vda root=/dev/mapper/verified_root ro rootwait",
+         root_dev); 
 
 
 
@@ -133,6 +133,13 @@ int main(void) {
 
     printf("Press ENTER to boot kernel...\n");
     getchar();
+
+    printf("\n=== ABOUT TO LAUNCH QEMU ===\n");
+    printf("Kernel: %s\n", KERNEL_IMG);
+    printf("Rootfs: %s\n", ROOTFS_IMG);
+    printf("Root device: %s\n", root_dev);
+    printf("\nPress ENTER again to continue to QEMU...\n");
+    getchar(); 
 
     int rc = boot_qemu(KERNEL_IMG, ROOTFS_IMG, root_dev);
     printf("QEMU exited with code %d\n", rc);
