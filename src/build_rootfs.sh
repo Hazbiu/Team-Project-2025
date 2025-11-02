@@ -2,69 +2,56 @@
 set -e
 
 BASE="debian-12-genericcloud-amd64.tar.xz"
+WORK="/mnt/root_work"
 IMG="rootfs.img"
-MOUNT="/mnt/root_build"
 
-# ---- Check prerequisites ----
-command -v sgdisk >/dev/null || { echo "Install gdisk: sudo apt install gdisk"; exit 1; }
-command -v losetup >/dev/null || { echo "Install util-linux: sudo apt install util-linux"; exit 1; }
-
-# ---- Ensure base tarball exists ----
+echo "[*] Checking base Debian cloud image..."
 if [ ! -f "$BASE" ]; then
-    echo "[*] Base image missing, downloading..."
-    wget https://cloud.debian.org/images/cloud/bookworm/latest/$BASE
+    echo "❌ $BASE not found in this directory!"
+    exit 1
 fi
 
-# ---- Create raw disk ----
-echo "[*] Creating 4GB disk image..."
-dd if=/dev/zero of="$IMG" bs=1M count=4096
+echo "[*] Preparing temporary workspace..."
+sudo rm -rf "$WORK"
+sudo mkdir -p "$WORK"
 
-echo "[*] Creating GPT partition layout..."
-sgdisk "$IMG" -o \
-  -n 1:1M:3.9G -t 1:8300 -c 1:"rootfs" \
-  -n 14:3.9G:3.91G -t 14:EF02 \
-  -n 15:3.91G:4G   -t 15:EF00
+echo "[*] Extracting disk.raw from cloud image..."
+sudo tar --xattrs --numeric-owner -xf "$BASE" -C "$WORK"
 
-# ---- Attach loop device ----
-echo "[*] Mapping loop partitions..."
+if [ ! -f "$WORK/disk.raw" ]; then
+    echo "❌ ERROR: disk.raw not found inside cloud image!"
+    exit 1
+fi
+
+echo "[*] Using disk.raw directly as root filesystem..."
+rm -f "$IMG"
+sudo mv "$WORK/disk.raw" "$IMG"
+sudo chown $USER:$USER "$IMG"
+
+
+echo "[*] Mounting rootfs to set root password..."
 LOOP=$(sudo losetup --find --show --partscan "$IMG")
-echo "→ Using loop device: $LOOP"
+sudo mount ${LOOP}p1 "$WORK"
 
-echo "[*] Creating ext4 filesystem..."
-sudo mkfs.ext4 "${LOOP}p1"
-
-echo "[*] Mounting filesystem..."
-sudo mkdir -p "$MOUNT"
-sudo mount "${LOOP}p1" "$MOUNT"
-
-# ---- Extract Debian rootfs ----
-echo "[*] Extracting base Debian system..."
-sudo tar -xpf "$BASE" -C "$MOUNT"
-
-# ---- SystemD Init Fix ----
-echo "[*] Ensuring system boots with systemd..."
-sudo ln -sf /lib/systemd/systemd "$MOUNT/sbin/init"
-
-# ---- Set login password ----
 echo "[*] Setting root password to 'root'..."
-echo "root:root" | sudo chroot "$MOUNT" chpasswd
+echo "root:root" | sudo chroot "$WORK" chpasswd
 
-# ---- Cleanup ----
-echo "[*] Unmounting and detaching loop..."
-sudo umount "$MOUNT"
+echo "[*] Ensuring /sbin/init → systemd..."
+sudo ln -sf /usr/lib/systemd/systemd "$WORK/sbin/init" || \
+sudo ln -sf /lib/systemd/systemd "$WORK/sbin/init"
+
+echo "[*] Cleanup..."
+sudo umount "$WORK"
 sudo losetup -d "$LOOP"
+sudo rm -rf "$WORK"
 
+echo "✅ DONE: rootfs.img is ready."
 echo
-echo "✅ Done! rootfs.img is ready."
-echo
-echo "Run with:"
-echo "------------------------------------------------------------"
+echo "Run QEMU with:"
 echo "qemu-system-x86_64 \\"
-echo "  -m 2G \\"
-echo "  -kernel linux/kernel_image.bin \\"
-echo "  -initrd src/Binaries/initramfs.cpio.gz \\"
+echo "  -m 2G -smp 2 \\"
+echo "  -kernel bootloaders/kernel_image.bin \\"
+echo "  -initrd Binaries/initramfs.cpio.gz \\"
 echo "  -drive file=rootfs.img,format=raw \\"
-echo "  -append \"root=/dev/sda1 rw console=ttyS0 systemd.unified_cgroup_hierarchy=1\" \\"
+echo "  -append \"root=/dev/sda1 rw console=ttyS0\" \\"
 echo "  -nographic"
-echo "------------------------------------------------------------"
-
