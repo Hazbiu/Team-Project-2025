@@ -184,6 +184,7 @@ dd if="$METADATA_FILE" bs=1 count=$SIGN_SIZE of="$HEADER_BIN" 2>/dev/null
 # produce DER PKCS7 (CMS) SignedData with embedded data, self-signed cert
 openssl smime -sign \
     -binary \
+    -noattr \
     -in "$HEADER_BIN" \
     -signer "$CERT_FILE" \
     -inkey "$PRIV_KEY" \
@@ -191,6 +192,7 @@ openssl smime -sign \
     -nosmimecap \
     -nodetach \
     > "$SIG_FILE"
+
 
 PKCS7_SIZE=$(stat -c%s "$SIG_FILE")
 echo "  ✅ PKCS7 size: $PKCS7_SIZE bytes"
