@@ -1,0 +1,5 @@
+#!/bin/sh
+mount -t proc none /proc
+mount -t sysfs none /sys
+echo "✅ Booted Minimal Initramfs RootFS!"
+exec /bin/sh

@@ -1,0 +1,5 @@
+#!/bin/sh
+mount -t proc none /proc
+mount -t sysfs none /sys
+echo "✅ Minimal RootFS Booted!"
+/bin/sh
