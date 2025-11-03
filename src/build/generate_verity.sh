@@ -22,17 +22,17 @@ mkdir -p "$META_DIR"
 
 # --- sanity checks ---
 if [[ ! -f "$ROOTFS_IMG" ]]; then
-    echo "❌ rootfs.img not found at: $ROOTFS_IMG"
+    echo " rootfs.img not found at: $ROOTFS_IMG"
     exit 1
 fi
 
 if [[ ! -f "$PRIV_KEY" ]]; then
-    echo "❌ bl_private.pem not found at: $PRIV_KEY"
+    echo " bl_private.pem not found at: $PRIV_KEY"
     exit 1
 fi
 
 if [[ ! -f "$CERT_FILE" ]]; then
-    echo "❌ bl_cert.pem not found at: $CERT_FILE"
+    echo " bl_cert.pem not found at: $CERT_FILE"
     exit 1
 fi
 
@@ -43,7 +43,7 @@ echo "  Loop device: $LOOP_DEV"
 sleep 1
 PART_DEV="${LOOP_DEV}p1"
 if [ ! -e "$PART_DEV" ]; then
-    echo "  ❌ ERROR: Partition $PART_DEV not found!"
+    echo "  ERROR: Partition $PART_DEV not found!"
     sudo losetup -d "$LOOP_DEV"
     exit 1
 fi
@@ -91,20 +91,20 @@ ROOT_HASH=$(grep -i "^Root hash:" "$META_DIR/verity_info.txt" | awk '{print $3}'
 SALT_HEX=$(grep -i "^Salt:" "$META_DIR/verity_info.txt" | awk '{print $2}')
 
 if [ -z "$ROOT_HASH" ]; then
-    echo "  ❌ ERROR: Failed to extract root hash"
+    echo "  ERROR: Failed to extract root hash"
     sudo losetup -d "$LOOP_DEV"
     exit 1
 fi
 if [ -z "$SALT_HEX" ]; then
-    echo "  ❌ ERROR: Failed to extract salt"
+    echo "  ERROR: Failed to extract salt"
     sudo losetup -d "$LOOP_DEV"
     exit 1
 fi
 
 echo "$ROOT_HASH" > "$ROOT_HASH_FILE"
 
-echo "  ✅ Root hash: $ROOT_HASH"
-echo "  ✅ Salt (hex): $SALT_HEX"
+echo "     Root hash: $ROOT_HASH"
+echo "     Salt (hex): $SALT_HEX"
 echo "     Salt length (hex chars): ${#SALT_HEX}"
 
 echo "[5/7] Building unsigned metadata blob (4KB footer struct, PKCS7 mode)..."
@@ -168,7 +168,7 @@ offset += 4   # now 200
 with open("${METADATA_FILE}", 'wb') as f:
     f.write(metadata)
 
-print("  ✅ Metadata structure (PKCS7 mode) created (4096 bytes)")
+print("     Metadata structure (PKCS7 mode) created (4096 bytes)")
 print("     MAGIC=0x%08X VERSION=%d" % (MAGIC, VERSION))
 print("     data_blocks=${BLOCK_COUNT}")
 print("     hash_start_sector=${HASH_OFFSET_SECTORS}")
@@ -195,9 +195,9 @@ openssl smime -sign \
 
 
 PKCS7_SIZE=$(stat -c%s "$SIG_FILE")
-echo "  ✅ PKCS7 size: $PKCS7_SIZE bytes"
+echo "  PKCS7 size: $PKCS7_SIZE bytes"
 if [ "$PKCS7_SIZE" -gt 2048 ]; then
-    echo "❌ PKCS7 blob ($PKCS7_SIZE bytes) does not fit reserved 2048 bytes"
+    echo " PKCS7 blob ($PKCS7_SIZE bytes) does not fit reserved 2048 bytes"
     sudo losetup -d "$LOOP_DEV"
     exit 1
 fi
@@ -223,7 +223,7 @@ metadata[200:200+pkcs7_size] = pkcs7_blob
 with open("${METADATA_FILE}", 'wb') as f:
     f.write(metadata)
 
-print("  ✅ PKCS7 blob embedded at offset 200, size", pkcs7_size)
+print("  PKCS7 blob embedded at offset 200, size", pkcs7_size)
 EOF
 
 echo "[FINAL] Writing 4KB footer to END OF WHOLE DISK (/dev/vda model)..."
@@ -238,7 +238,7 @@ sudo dd if="${METADATA_FILE}" of="$LOOP_DEV" \
     bs=4096 seek=$((DISK_META_OFFSET / 4096)) conv=notrunc 2>/dev/null
 sync
 
-echo "  ✅ Metadata written to last 4KB of disk image ($LOOP_DEV)"
+echo "  Metadata written to last 4KB of disk image ($LOOP_DEV)"
 echo "     NOTE: this overwrote the backup GPT on purpose."
 
 sudo losetup -d "$LOOP_DEV"
@@ -246,7 +246,7 @@ sudo chown -R "$USER:$USER" "$META_DIR"
 
 echo
 echo "========================================"
-echo "  ✅ dm-verity generation complete (with salt + PKCS7 signature)"
+echo "  dm-verity generation complete (with salt + PKCS7 signature)"
 echo "========================================"
 echo
 echo "Artifacts in $META_DIR:"

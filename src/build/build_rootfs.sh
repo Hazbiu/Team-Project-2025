@@ -20,9 +20,9 @@ if [ ! -d "$ROOTFS_DIR/etc" ]; then
         --arch=amd64 \
         --include=systemd,systemd-sysv,udev,passwd,login,sudo,net-tools,iproute2,ifupdown,openssh-server,vim,less \
         bookworm "$ROOTFS_DIR" http://deb.debian.org/debian/
-    echo "  ✅ Base Debian installed."
+    echo "   Base Debian installed."
 else
-    echo "  ℹ️  Debian base already exists, skipping debootstrap"
+    echo "   Debian base already exists, skipping debootstrap"
 fi
 
 echo "[2/4] Configuring rootfs..."
@@ -54,7 +54,7 @@ EOF
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 "
-echo "  ✅ Basic configuration done"
+echo "  Basic configuration done"
 
 # Clean special directories
 sudo rm -rf "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" "$ROOTFS_DIR/dev"
@@ -77,7 +77,7 @@ sudo rsync -aHAX --info=progress2 "$ROOTFS_DIR"/ /mnt/temp-rootfs/
 sync
 sudo umount /mnt/temp-rootfs
 sudo rmdir /mnt/temp-rootfs
-echo "  ✅ Temporary filesystem created"
+echo "  Temporary filesystem created"
 
 echo "[4/4] Creating GPT-partitioned disk image..."
 
@@ -115,7 +115,7 @@ parted -s "$OUTPUT_IMG" name 1 rootfs
 # Set partition as bootable (optional)
 parted -s "$OUTPUT_IMG" set 1 boot on
 
-echo "  ✅ GPT partition table created"
+echo "  GPT partition table created"
 
 # Show partition layout
 echo
@@ -131,7 +131,7 @@ echo "  Loop device: $LOOP_DEV"
 # Wait for partition device node
 sleep 1
 if [ ! -e "${LOOP_DEV}p1" ]; then
-    echo "  ❌ ERROR: Partition ${LOOP_DEV}p1 not found!"
+    echo "  ERROR: Partition ${LOOP_DEV}p1 not found!"
     sudo losetup -d "$LOOP_DEV"
     exit 1
 fi
@@ -141,7 +141,7 @@ fi
 sudo dd if="$TEMP_FS" of="${LOOP_DEV}p1" bs=4M status=progress conv=fsync
 sync
 
-echo "  ✅ Filesystem written to partition 1"
+echo "  Filesystem written to partition 1"
 
 # Verify: Check filesystem size vs partition size
 FS_SIZE=$(stat -c%s "$TEMP_FS")
@@ -171,7 +171,7 @@ sudo chown "$USER:$USER" "$OUTPUT_IMG"
 
 echo
 echo "========================================"
-echo "  ✅ Rootfs disk image created!"
+echo "  Rootfs disk image created!"
 echo "========================================"
 echo "Output: $OUTPUT_IMG"
 echo

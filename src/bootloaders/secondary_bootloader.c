@@ -14,7 +14,6 @@
 // ---------- Artifacts ----------
 static const char *KERNEL_IMG   = "kernel_image.bin";
 static const char *ROOTFS_IMG   = "rootfs.img";
-// static const char *VERITY_META  = "rootfs.verity.meta"; // optional (ignored if missing)
 
 // ---------- GPT RootFS Detection ----------
 #pragma pack(push,1)

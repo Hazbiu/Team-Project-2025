@@ -360,7 +360,7 @@ static int read_metadata_footer(struct file *f,
 			salt_size = 64;
 		hex_encode(meta->salt, salt_size, salt_hex);
 
-		pr_info("%s: ✅ Footer parsed OK\n", DM_MSG_PREFIX);
+		pr_info("%s: ====  Footer parsed OK ==== \n", DM_MSG_PREFIX);
 		pr_info("%s:   version            : %u\n",
 			DM_MSG_PREFIX, le32_to_cpu(meta->version));
 		pr_info("%s:   data_blocks        : %llu\n",
@@ -428,7 +428,7 @@ static int create_verity_target(const char *root_dev,
 	hex_encode(meta->root_hash, 64, root_hash_hex);
 	hex_encode(meta->salt, salt_size, salt_hex);
 
-	pr_info("%s: === dm-verity mapping (preview) ===\n", DM_MSG_PREFIX);
+	pr_info("%s: ==== dm-verity mapping (preview) ====\n", DM_MSG_PREFIX);
 	pr_info("%s: dmsetup create verified_root --table "
 		"\"0 %llu verity 1 %u:%u %u:%u %u %u %llu %llu %s %s %s\"\n",
 		DM_MSG_PREFIX,
