@@ -6,5 +6,5 @@ Data block size: 	4096
 Hash blocks:     	848
 Hash block size: 	4096
 Hash algorithm:  	sha256
-Salt:            	c968e100c1fb3d155b6225abb4568ac0ec0c690e78c8090183eaf25d8216930a
-Root hash:      	88745eee46fb932177186ceabb8ac8d90b7af82e0362483bd388735693594208
+Salt:            	6800fe9ea3d2cd9d3cae30f08e669a4f33b2e53e31e786efd9e1ae02cdf06446
+Root hash:      	63b52711d4c27eeea6756a992a40480294fe6421e8d8a10f9d6f7c596988c0c3
