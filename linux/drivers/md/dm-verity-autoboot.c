@@ -3,8 +3,10 @@
  * dm-verity-autoboot.c
  *
  * Verify dm-verity footer (attached or detached PKCS7) and, if trusted,
- * create /dev/mapper/verified_root by writing to dm_mod 'create' sysfs param.
- * Avoids any dependency on /dev nodes by using major:minor from dev_t.
+ * just log success. Device creation is done by dm-init via dm-mod.create=
+ * on the kernel command line.
+ *
+ * Build as built-in or module. Recommended as built-in for early verification.
  */
 
 #include <linux/init.h>
@@ -17,7 +19,8 @@
 #include <linux/device.h>
 #include <linux/major.h>
 #include <linux/string.h>
-#include <linux/device-mapper.h>
+#include <linux/cred.h>
+#include <linux/sched.h>
 
 #include <crypto/hash.h>
 #include <linux/verification.h>
@@ -174,24 +177,6 @@ static int resolve_dev_from_diskname(const char *path, dev_t *out_dev)
 	return -ENODEV;
 }
 
-/* Wait until a path can be opened (e.g., sysfs param) */
-static int wait_for_path(const char *path, unsigned int timeout_ms, int flags)
-{
-	unsigned int waited = 0;
-
-	for (;;) {
-		struct file *f = filp_open(path, flags, 0);
-		if (!IS_ERR(f)) {
-			filp_close(f, NULL);
-			return 0;
-		}
-		if (waited >= timeout_ms)
-			return -ENOENT;
-		msleep(50);
-		waited += 50;
-	}
-}
-
 /* ----- read attached footer ----- */
 static int read_metadata_footer_attached(struct file *f,
 				struct verity_metadata_ondisk *meta)
@@ -201,7 +186,7 @@ static int read_metadata_footer_attached(struct file *f,
 
 	size = i_size_read(file_inode(f));
 	if (size < VERITY_META_SIZE) {
-		pr_err("%s: ERROR: device too small (%lld bytes)\n",
+		pr_err("%s: device too small (%lld bytes)\n",
 		       DM_MSG_PREFIX, size);
 		return -EINVAL;
 	}
@@ -209,13 +194,13 @@ static int read_metadata_footer_attached(struct file *f,
 	pos = size - VERITY_META_SIZE;
 	bytes = kernel_read(f, meta, VERITY_META_SIZE, &pos);
 	if (bytes != VERITY_META_SIZE) {
-		pr_err("%s: ERROR: kernel_read footer failed (%zd)\n",
+		pr_err("%s: kernel_read footer failed (%zd)\n",
 		       DM_MSG_PREFIX, bytes);
 		return -EIO;
 	}
 
 	if (le32_to_cpu(meta->magic) != VERITY_META_MAGIC) {
-		pr_err("%s: ERROR: bad magic 0x%08x (expected 0x%08x)\n",
+		pr_err("%s: bad magic 0x%08x (expected 0x%08x)\n",
 		       DM_MSG_PREFIX,
 		       le32_to_cpu(meta->magic),
 		       VERITY_META_MAGIC);
@@ -240,7 +225,7 @@ static int read_metadata_footer_attached(struct file *f,
 			salt_size = 64;
 		hex_encode(meta->salt, salt_size, salt_hex);
 
-		pr_info("%s: ====  Footer parsed OK ==== \n", DM_MSG_PREFIX);
+		pr_info("%s: ---- Footer parsed ----\n", DM_MSG_PREFIX);
 		pr_info("%s:   version            : %u\n",
 			DM_MSG_PREFIX, le32_to_cpu(meta->version));
 		pr_info("%s:   data_blocks        : %llu\n",
@@ -269,7 +254,7 @@ static int read_metadata_footer_attached(struct file *f,
 		dump_hex_short("salt raw", meta->salt,
 			       le32_to_cpu(meta->salt_size), 32);
 		dump_hex_short("pkcs7 head", meta->pkcs7_blob,
-			       pkcs7_size, 16);
+			       pkcs7_size, 32);
 	}
 
 	return 0;
@@ -286,13 +271,13 @@ static int verify_signature_pkcs7_attached(const struct verity_metadata_ondisk *
 	int ret;
 	struct pkcs7_message *pkcs7;
 
-	pr_info("%s: ==== Step 2: Verifying PKCS7 signature (ATTACHED) ====\n", DM_MSG_PREFIX);
+	pr_info("%s: Verifying PKCS7 signature (attached)\n", DM_MSG_PREFIX);
 
 	blob_sz = le32_to_cpu(meta->pkcs7_size);
 	pr_info("%s:   pkcs7_size = %u bytes\n", DM_MSG_PREFIX, blob_sz);
 
 	if (!blob_sz || blob_sz > VERITY_PKCS7_MAX) {
-		pr_err("%s:   FATAL: invalid pkcs7_size %u (max %u)\n",
+		pr_err("%s: invalid pkcs7_size %u (max %u)\n",
 		       DM_MSG_PREFIX, blob_sz, VERITY_PKCS7_MAX);
 		return -EINVAL;
 	}
@@ -301,7 +286,7 @@ static int verify_signature_pkcs7_attached(const struct verity_metadata_ondisk *
 
 	ret = compute_footer_digest(meta, digest);
 	if (ret) {
-		pr_err("%s:   FATAL: compute_footer_digest() failed: %d\n",
+		pr_err("%s: compute_footer_digest() failed: %d\n",
 		       DM_MSG_PREFIX, ret);
 		return ret;
 	}
@@ -309,45 +294,43 @@ static int verify_signature_pkcs7_attached(const struct verity_metadata_ondisk *
 
 	pkcs7 = pkcs7_parse_message(meta->pkcs7_blob, blob_sz);
 	if (IS_ERR(pkcs7)) {
-		pr_err("%s:   FATAL: pkcs7_parse_message() failed: %ld\n",
+		pr_err("%s: pkcs7_parse_message() failed: %ld\n",
 		       DM_MSG_PREFIX, PTR_ERR(pkcs7));
 		return PTR_ERR(pkcs7);
 	}
 
 	ret = pkcs7_verify(pkcs7, VERIFYING_MODULE_SIGNATURE);
 	if (ret) {
-		pr_err("%s:   FATAL: pkcs7_verify(): signer NOT trusted (%d)\n",
+		pr_err("%s: pkcs7_verify(): signer NOT trusted (%d)\n",
 		       DM_MSG_PREFIX, ret);
 		goto out_free;
 	}
-	pr_info("%s:  ==== pkcs7_verify(): signer ACCEPTED by kernel trusted keyring ====\n",
+	pr_info("%s: signer accepted by kernel trusted keyring\n",
 		DM_MSG_PREFIX);
 
 	ret = pkcs7_get_digest(pkcs7, &signed_hash, &signed_hash_len, &signed_hash_algo);
 	if (ret) {
-		pr_err("%s:   FATAL: pkcs7_get_digest(): %d\n",
-		       DM_MSG_PREFIX, ret);
+		pr_err("%s: pkcs7_get_digest(): %d\n", DM_MSG_PREFIX, ret);
 		goto out_free;
 	}
 
-	pr_info("%s:   PKCS7 digest metadata:\n", DM_MSG_PREFIX);
-	pr_info("%s:      hash_algo = %d\n", DM_MSG_PREFIX, signed_hash_algo);
-	pr_info("%s:      hash_len  = %u\n", DM_MSG_PREFIX, signed_hash_len);
+	pr_info("%s:   digest algo = %d, len = %u\n",
+		DM_MSG_PREFIX, signed_hash_algo, signed_hash_len);
 	dump_hex_short("pkcs7.signed_hash", signed_hash, signed_hash_len, 32);
 
 	if (signed_hash_algo != HASH_ALGO_SHA256 || signed_hash_len != 32) {
-		pr_err("%s:   FATAL: digest algo/len not SHA256/32\n", DM_MSG_PREFIX);
+		pr_err("%s: digest algo/len not SHA256/32\n", DM_MSG_PREFIX);
 		ret = -EKEYREJECTED;
 		goto out_free;
 	}
 	if (memcmp(signed_hash, digest, 32) != 0) {
-		pr_err("%s:   FATAL: digest mismatch between PKCS7 and footer[0..195]\n", DM_MSG_PREFIX);
+		pr_err("%s: digest mismatch between PKCS7 and footer[0..195]\n", DM_MSG_PREFIX);
 		ret = -EKEYREJECTED;
 		goto out_free;
 	}
 
-	pr_info("%s:  ==== Digest in PKCS7 matches SHA256(header[0..195]) ====\n", DM_MSG_PREFIX);
-	pr_info("%s:  ==== Footer header (hash tree root, salt, layout) is AUTHENTIC ====\n", DM_MSG_PREFIX);
+	pr_info("%s: Digest in PKCS7 matches header digest; footer is authentic\n",
+		DM_MSG_PREFIX);
 	ret = 0;
 
 out_free:
@@ -366,7 +349,7 @@ static int verify_signature_pkcs7_detached(const u8 *meta_buf, u32 meta_len,
 	u8 digest[32];
 	int ret;
 
-	pr_info("%s: ==== Step 2: Verifying PKCS7 signature (DETACHED) ====\n", DM_MSG_PREFIX);
+	pr_info("%s: Verifying PKCS7 signature (detached)\n", DM_MSG_PREFIX);
 	pr_info("%s:   meta_len = %u, sig_len = %u\n", DM_MSG_PREFIX, meta_len, sig_len);
 	dump_hex_short("detached.pkcs7 head", sig_buf, sig_len, 32);
 
@@ -375,52 +358,51 @@ static int verify_signature_pkcs7_detached(const u8 *meta_buf, u32 meta_len,
 
 	ret = sha256_buf(meta_buf, meta_len, digest);
 	if (ret) {
-		pr_err("%s:   FATAL: sha256(meta_buf) failed: %d\n", DM_MSG_PREFIX, ret);
+		pr_err("%s: sha256(meta_buf) failed: %d\n", DM_MSG_PREFIX, ret);
 		return ret;
 	}
 	dump_hex_short("computed_digest(SHA256[meta_buf])", digest, 32, 32);
 
 	pkcs7 = pkcs7_parse_message(sig_buf, sig_len);
 	if (IS_ERR(pkcs7)) {
-		pr_err("%s:   FATAL: pkcs7_parse_message(): %ld\n", DM_MSG_PREFIX, PTR_ERR(pkcs7));
+		pr_err("%s: pkcs7_parse_message(): %ld\n", DM_MSG_PREFIX, PTR_ERR(pkcs7));
 		return PTR_ERR(pkcs7);
 	}
 
 	ret = pkcs7_supply_detached_data(pkcs7, meta_buf, meta_len);
 	if (ret) {
-		pr_err("%s:   FATAL: pkcs7_supply_detached_data(): %d\n", DM_MSG_PREFIX, ret);
+		pr_err("%s: pkcs7_supply_detached_data(): %d\n", DM_MSG_PREFIX, ret);
 		goto out_free;
 	}
 
 	ret = pkcs7_verify(pkcs7, VERIFYING_MODULE_SIGNATURE);
 	if (ret) {
-		pr_err("%s:   FATAL: pkcs7_verify(): signer NOT trusted (%d)\n", DM_MSG_PREFIX, ret);
+		pr_err("%s: pkcs7_verify(): signer NOT trusted (%d)\n", DM_MSG_PREFIX, ret);
 		goto out_free;
 	}
 
 	ret = pkcs7_get_digest(pkcs7, &signed_hash, &signed_hash_len, &signed_hash_algo);
 	if (ret) {
-		pr_err("%s:   FATAL: pkcs7_get_digest(): %d\n", DM_MSG_PREFIX, ret);
+		pr_err("%s: pkcs7_get_digest(): %d\n", DM_MSG_PREFIX, ret);
 		goto out_free;
 	}
 
-	pr_info("%s:   PKCS7 digest metadata:\n", DM_MSG_PREFIX);
-	pr_info("%s:      hash_algo = %d\n", DM_MSG_PREFIX, signed_hash_algo);
-	pr_info("%s:      hash_len  = %u\n", DM_MSG_PREFIX, signed_hash_len);
+	pr_info("%s:   digest algo = %d, len = %u\n",
+		DM_MSG_PREFIX, signed_hash_algo, signed_hash_len);
 	dump_hex_short("pkcs7.signed_hash", signed_hash, signed_hash_len, 32);
 
 	if (signed_hash_algo != HASH_ALGO_SHA256 || signed_hash_len != 32) {
-		pr_err("%s:   FATAL: digest algo/len not SHA256/32\n", DM_MSG_PREFIX);
+		pr_err("%s: digest algo/len not SHA256/32\n", DM_MSG_PREFIX);
 		ret = -EKEYREJECTED;
 		goto out_free;
 	}
 	if (memcmp(signed_hash, digest, 32) != 0) {
-		pr_err("%s:   FATAL: digest mismatch between PKCS7 and detached metadata\n", DM_MSG_PREFIX);
+		pr_err("%s: digest mismatch between PKCS7 and detached metadata\n", DM_MSG_PREFIX);
 		ret = -EKEYREJECTED;
 		goto out_free;
 	}
 
-	pr_info("%s:  ==== Digest in PKCS7 matches SHA256(detached metadata) ====\n", DM_MSG_PREFIX);
+	pr_info("%s: Digest in PKCS7 matches detached metadata digest\n", DM_MSG_PREFIX);
 	return 0;
 
 out_free:
@@ -428,88 +410,19 @@ out_free:
 	return ret;
 }
 
-/* ===== Create dm device via /sys/module/dm_mod/parameters/create (using major:minor) ===== */
-static int create_verity_device_via_sysfs_devnum(dev_t dev,
-				const struct verity_metadata_ondisk *meta)
-{
-	struct file *f;
-	u64 data_blocks = le64_to_cpu(meta->data_blocks);
-	u32 dsz = le32_to_cpu(meta->data_block_size);
-	u32 hsz = le32_to_cpu(meta->hash_block_size);
-	u64 hash_start_sector = le64_to_cpu(meta->hash_start_sector);
-	u32 salt_size = le32_to_cpu(meta->salt_size);
-	sector_t num_sectors = (data_blocks * (u64)dsz) / 512;
-	char root_hash_hex[129], salt_hex[129];
-	char table_line[2048];
-	loff_t pos;
-	int ret;
-
-	if (salt_size > 64)
-		salt_size = 64;
-	hex_encode(meta->root_hash, 64, root_hash_hex);
-	hex_encode(meta->salt, salt_size, salt_hex);
-
-	pr_info("%s: ==== Step 3: Creating dm-verity device via /sys ====\n",
-		DM_MSG_PREFIX);
-
-	/* Build dm table using major:minor numbers (no /dev dependency) */
-	snprintf(table_line, sizeof(table_line),
-		"verified_root,,,ro,0 %llu verity 1 %u:%u %u:%u %u %u %llu %llu sha256 %s %s",
-		(unsigned long long)num_sectors,
-		MAJOR(dev), MINOR(dev),  /* data device */
-		MAJOR(dev), MINOR(dev),  /* hash device (same disk) */
-		dsz, hsz,
-		(unsigned long long)data_blocks,
-		(unsigned long long)hash_start_sector,
-		root_hash_hex, salt_hex);
-
-	pr_info("%s: Table: %s\n", DM_MSG_PREFIX, table_line);
-
-	/* Wait for the dm_mod param to be present under sysfs */
-	ret = wait_for_path("/sys/module/dm_mod/parameters/create", 10000, O_WRONLY);
-	if (ret) {
-		pr_err("%s: dm_mod create param not present (ret=%d)\n", DM_MSG_PREFIX, ret);
-		pr_err("%s: Make sure CONFIG_DM_INIT=y and dm_mod is built-in\n", DM_MSG_PREFIX);
-		return ret;
-	}
-
-	f = filp_open("/sys/module/dm_mod/parameters/create", O_WRONLY, 0);
-	if (IS_ERR(f)) {
-		pr_err("%s: Cannot open /sys/module/dm_mod/parameters/create: %ld\n",
-		       DM_MSG_PREFIX, PTR_ERR(f));
-		return PTR_ERR(f);
-	}
-
-	pos = 0;
-	ret = kernel_write(f, table_line, strlen(table_line), &pos);
-	filp_close(f, NULL);
-
-	if (ret < 0) {
-		pr_err("%s: kernel_write() failed: %d\n", DM_MSG_PREFIX, ret);
-		return ret;
-	}
-
-	pr_info("%s: ==== SUCCESS: requested /dev/mapper/verified_root creation ====\n",
-		DM_MSG_PREFIX);
-
-	/* Give devtmpfs a moment to materialize the node (when /dev is mounted) */
-	msleep(100);
-	return 0;
-}
-
-/* ----- main worker: verify first, then create mapping ----- */
+/* ----- main worker: verify only ----- */
 static int verity_autoboot_main(void)
 {
 	struct file *bdev_file;
 	dev_t dev;
 	int ret;
 
-	pr_info("%s: ========================================\n", DM_MSG_PREFIX);
-	pr_info("%s: Starting dm-verity autoboot\n", DM_MSG_PREFIX);
-	pr_info("%s: ========================================\n", DM_MSG_PREFIX);
+	pr_info("%s: ==============================================\n", DM_MSG_PREFIX);
+	pr_info("%s: Start: dm-verity signature verification (verify-only)\n", DM_MSG_PREFIX);
+	pr_info("%s: ==============================================\n", DM_MSG_PREFIX);
 
 	if (!autoboot_device || !*autoboot_device) {
-		pr_info("%s: autoboot_device not set, skipping\n", DM_MSG_PREFIX);
+		pr_info("%s: autoboot_device not set — skipping verification\n", DM_MSG_PREFIX);
 		return 0;
 	}
 
@@ -517,7 +430,7 @@ static int verity_autoboot_main(void)
 
 	ret = resolve_dev_from_diskname(autoboot_device, &dev);
 	if (ret) {
-		pr_err("%s: ERROR: cannot resolve %s (%d)\n",
+		pr_err("%s: cannot resolve %s (%d)\n",
 		       DM_MSG_PREFIX, autoboot_device, ret);
 		return ret;
 	}
@@ -525,10 +438,10 @@ static int verity_autoboot_main(void)
 	pr_info("%s: resolved %s -> major=%u minor=%u\n",
 		DM_MSG_PREFIX, autoboot_device, MAJOR(dev), MINOR(dev));
 
-	/* Open block device by dev_t for footer reads (works without /dev nodes) */
+	/* Open block device by dev_t for footer reads */
 	bdev_file = bdev_file_open_by_dev(dev, BLK_OPEN_READ, NULL, NULL);
 	if (IS_ERR(bdev_file)) {
-		pr_err("%s: ERROR: bdev_file_open_by_dev() -> %ld\n",
+		pr_err("%s: bdev_file_open_by_dev() -> %ld\n",
 		       DM_MSG_PREFIX, PTR_ERR(bdev_file));
 		return PTR_ERR(bdev_file);
 	}
@@ -540,7 +453,7 @@ static int verity_autoboot_main(void)
 		loff_t pos = sz - VERITY_META_SIZE;
 		ssize_t got = kernel_read(bdev_file, tail, VERITY_META_SIZE, &pos);
 		if (got != VERITY_META_SIZE) {
-			pr_err("%s: ERROR: read tail failed (%zd)\n", DM_MSG_PREFIX, got);
+			pr_err("%s: read tail failed (%zd)\n", DM_MSG_PREFIX, got);
 			fput(bdev_file);
 			return -EIO;
 		}
@@ -558,7 +471,7 @@ static int verity_autoboot_main(void)
 					return -ENOMEM;
 				}
 
-				pr_info("%s: ===== Step 1: read+dump footer (ATTACHED) ==== \n", DM_MSG_PREFIX);
+				pr_info("%s: Footer mode: attached (VERI)\n", DM_MSG_PREFIX);
 				ret = read_metadata_footer_attached(bdev_file, meta);
 				if (ret) {
 					kfree(meta);
@@ -570,25 +483,25 @@ static int verity_autoboot_main(void)
 				if (ret) {
 					kfree(meta);
 					fput(bdev_file);
-					pr_emerg("%s: rootfs footer NOT TRUSTED (ret=%d). Halting.\n",
+					pr_emerg("%s: signature verification FAILED (attached), ret=%d\n",
 						 DM_MSG_PREFIX, ret);
 					panic("dm-verity-autoboot: untrusted rootfs footer");
 				}
 
-				/* CREATE THE DEVICE! (via sysfs, using major:minor) */
-				ret = create_verity_device_via_sysfs_devnum(dev, meta);
+				pr_info("%s: Signature verification PASSED (attached)\n", DM_MSG_PREFIX);
+				pr_info("%s: dm-init should have already created /dev/mapper/verified_root\n",
+					DM_MSG_PREFIX);
 				kfree(meta);
 				fput(bdev_file);
-				return ret;
+				return 0;
 
 			} else if (le32_to_cpu(magic) == VLOC_MAGIC) {
 				/* DETACHED */
 				struct verity_footer_locator loc;
 				u8 *meta_buf = NULL, *sig_buf = NULL;
-				struct verity_metadata_ondisk meta_tmp;
 
 				memcpy(&loc, tail, sizeof(loc));
-				pr_info("%s: ===== Step 1: read locator (DETACHED) ====\n", DM_MSG_PREFIX);
+				pr_info("%s: Footer mode: detached (VLOC)\n", DM_MSG_PREFIX);
 				pr_info("%s:   meta_off=%llu meta_len=%u sig_off=%llu sig_len=%u\n",
 					DM_MSG_PREFIX,
 					(unsigned long long)le64_to_cpu(loc.meta_off),
@@ -600,14 +513,14 @@ static int verity_autoboot_main(void)
 				ret = read_region(bdev_file, le64_to_cpu(loc.meta_off),
 						  le32_to_cpu(loc.meta_len), &meta_buf);
 				if (ret) {
-					pr_err("%s: ERROR: reading metadata region: %d\n", DM_MSG_PREFIX, ret);
+					pr_err("%s: reading metadata region: %d\n", DM_MSG_PREFIX, ret);
 					fput(bdev_file);
 					return ret;
 				}
 				ret = read_region(bdev_file, le64_to_cpu(loc.sig_off),
 						  le32_to_cpu(loc.sig_len), &sig_buf);
 				if (ret) {
-					pr_err("%s: ERROR: reading signature region: %d\n", DM_MSG_PREFIX, ret);
+					pr_err("%s: reading signature region: %d\n", DM_MSG_PREFIX, ret);
 					kfree(meta_buf);
 					fput(bdev_file);
 					return ret;
@@ -623,34 +536,22 @@ static int verity_autoboot_main(void)
 					kfree(sig_buf);
 					kfree(meta_buf);
 					fput(bdev_file);
-					pr_emerg("%s: rootfs detached metadata NOT TRUSTED (ret=%d). Halting.\n",
+					pr_emerg("%s: signature verification FAILED (detached), ret=%d\n",
 						 DM_MSG_PREFIX, ret);
 					panic("dm-verity-autoboot: untrusted detached metadata");
 				}
 
-				/* Reconstruct metadata header for device creation */
-				if (le32_to_cpu(loc.meta_len) < VERITY_FOOTER_SIGNED_LEN) {
-					kfree(sig_buf);
-					kfree(meta_buf);
-					fput(bdev_file);
-					pr_err("%s: ERROR: detached meta_len too small (%u)\n",
-					       DM_MSG_PREFIX, le32_to_cpu(loc.meta_len));
-					return -EINVAL;
-				}
-
-				memset(&meta_tmp, 0, sizeof(meta_tmp));
-				memcpy(&meta_tmp, meta_buf, VERITY_FOOTER_SIGNED_LEN);
-
-				/* CREATE THE DEVICE! (via sysfs, using major:minor) */
-				ret = create_verity_device_via_sysfs_devnum(dev, &meta_tmp);
+				pr_info("%s: Signature verification PASSED (detached)\n", DM_MSG_PREFIX);
+				pr_info("%s: dm-init should have already created /dev/mapper/verified_root\n",
+					DM_MSG_PREFIX);
 
 				kfree(sig_buf);
 				kfree(meta_buf);
 				fput(bdev_file);
-				return ret;
+				return 0;
 
 			} else {
-				pr_err("%s: ERROR: unknown tail magic 0x%08x\n",
+				pr_err("%s: unknown tail magic 0x%08x\n",
 				       DM_MSG_PREFIX, le32_to_cpu(magic));
 				fput(bdev_file);
 				return -EINVAL;
@@ -674,7 +575,7 @@ static int __init dm_verity_autoboot_init(void)
 	pr_info("%s: ==================================================\n",
 		DM_MSG_PREFIX);
 	pr_info("%s: dm-verity-autoboot initcall reached\n", DM_MSG_PREFIX);
-	pr_info("%s: ========= Full kernel cmdline:\n", DM_MSG_PREFIX);
+	pr_info("%s: ===== Kernel cmdline =====\n", DM_MSG_PREFIX);
 	pr_info("%s:   %s\n", DM_MSG_PREFIX,
 		saved_command_line ? saved_command_line : "(null)");
 
@@ -692,10 +593,10 @@ static int __init dm_verity_autoboot_init(void)
 	if (autoboot_device && *autoboot_device) {
 		/* delay a bit so virtio-blk registers and dm_mod param appears */
 		schedule_delayed_work(&verity_work, 5 * HZ);
-		pr_info("%s: scheduled verity worker in ~5s so virtio-blk is ready\n",
+		pr_info("%s: scheduled verification worker in ~5s\n",
 			DM_MSG_PREFIX);
 	} else {
-		pr_info("%s: not scheduling verity worker (no param)\n",
+		pr_info("%s: not scheduling verification (no param)\n",
 			DM_MSG_PREFIX);
 	}
 
@@ -710,9 +611,9 @@ static void __exit dm_verity_autoboot_exit(void)
 	pr_info("%s: module exit\n", DM_MSG_PREFIX);
 }
 
-module_init(dm_verity_autoboot_init);
+late_initcall(dm_verity_autoboot_init);
 module_exit(dm_verity_autoboot_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("dm-verity autoboot: verify signature, create /dev/mapper/verified_root");
+MODULE_DESCRIPTION("dm-verity autoboot: verify signature only (dm-init creates mapping)");
 MODULE_AUTHOR("team A");

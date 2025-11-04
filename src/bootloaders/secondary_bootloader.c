@@ -1,6 +1,4 @@
-// secondary_bootloader.c
-// Secure second-stage bootloader that reads dm-verity metadata and passes to kernel
-// Build: gcc -O2 -Wall -Wextra -o secondary_bootloader secondary_bootloader.c -lcrypto
+// Build: gcc -O2 -Wall -Wextra -o secondary_bootloader secondary_bootloader.c
 
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -11,106 +9,73 @@
 #include <unistd.h>
 #include <errno.h>
 #include <endian.h>
+#include <ctype.h>
 
-// ---------- Artifacts ----------
+/*
+ * This bootloader does 3 things:
+ *   1. Reads/verifies the dm-verity metadata header structure from the image
+ *      (for logging / sanity; not enforcing trust here).
+ *   2. Builds the correct dm-mod.create= line for dm-init.
+ *   3. Launches QEMU with that kernel cmdline.
+ *
+ * The rootfs layout we assume (what generate_verity.sh produced):
+ *   - Single GPT partition "rootfs" (vda1 in the guest)
+ *   - ext4 data blocks [0 .. BLOCK_COUNT-1]
+ *   - dm-verity Merkle tree immediately after that, same partition
+ *   - No verity superblock
+ *   - Detached 196-byte header + PKCS7 signature + locator at very end of disk
+ *
+ * The dm target must use:
+ *   data_dev = /dev/vda1
+ *   hash_dev = /dev/vda1
+ *
+ *   <num_data_blocks>      = BLOCK_COUNT
+ *   <hash_start_block>     = BLOCK_COUNT
+ *
+ * And the mapping is exposed as /dev/dm-0 (forced minor 0).
+ *
+ * Your kernel module:
+ *   - Runs after dm-init (late_initcall)
+ *   - Reads locator/footer, verifies signature authenticity
+ *   - If verification fails: panic("untrusted rootfs")
+ *   - If it passes: we keep going and mount /dev/dm-0
+ */
+
 static const char *KERNEL_IMG   = "kernel_image.bin";
 static const char *ROOTFS_IMG   = "rootfs.img";
 
-// ---------- dm-verity metadata structures ----------
+/* --- on-disk dm-verity metadata header (first 196 bytes of VERI) --- */
 #pragma pack(push,1)
 typedef struct {
     uint32_t magic;
     uint32_t version;
-    uint64_t data_blocks;
-    uint64_t hash_start_sector;
-    uint32_t data_block_size;
-    uint32_t hash_block_size;
-    char     hash_algorithm[32];
-    uint8_t  root_hash[64];
+    uint64_t data_blocks;        /* number of filesystem data blocks */
+    uint64_t hash_start_sector;  /* 512-byte sectors from start of partition (info / logging) */
+    uint32_t data_block_size;    /* bytes */
+    uint32_t hash_block_size;    /* bytes */
+    char     hash_algorithm[32]; /* "sha256" etc (not guaranteed to be NUL, we'll sanitize) */
+    uint8_t  root_hash[64];      /* up to sha512 */
     uint8_t  salt[64];
     uint32_t salt_size;
-    uint32_t pkcs7_size;
-    uint8_t  pkcs7_blob[2048];
-    uint8_t  reserved[1848];
-} verity_metadata_ondisk;
+    /* then would come pkcs7_size + pkcs7_blob..., but we don't read past 196 here */
+} verity_header_196;
 
+/* Locator footer ("VLOC") at last 4K of disk */
 typedef struct {
-    uint32_t magic;            /* "VLOC" */
+    uint32_t magic;     /* "VLOC" */
     uint32_t version;
-    uint64_t meta_off;
-    uint32_t meta_len;
-    uint64_t sig_off;
-    uint32_t sig_len;
-    uint8_t  reserved[4064];
+    uint64_t meta_off;  /* byte offset of 196-byte header in disk image */
+    uint32_t meta_len;  /* should be 196 */
+    uint64_t sig_off;   /* byte offset of PKCS7 signature blob */
+    uint32_t sig_len;   /* length of PKCS7 */
+    uint8_t  reserved[4096 - 32];
 } verity_footer_locator;
 #pragma pack(pop)
 
 #define VERITY_META_MAGIC  0x56455249  /* "VERI" */
 #define VLOC_MAGIC         0x564C4F43  /* "VLOC" */
 
-// ---------- GPT RootFS Detection ----------
-#pragma pack(push,1)
-typedef struct {
-    char signature[8];
-    uint32_t rev, header_size, hdr_crc, res;
-    uint64_t cur, bak, first, last;
-    uint8_t guid[16];
-    uint64_t ent_lba;
-    uint32_t count, entsz, arr_crc;
-} GPTHeader;
-
-typedef struct {
-    uint8_t type[16], id[16];
-    uint64_t first, last, attrs;
-    uint16_t name[36];
-} GPTEntry;
-#pragma pack(pop)
-
-static int gpt_find_rootfs_partition(const char *img) {
-    FILE *f = fopen(img, "rb");
-    if (!f) return 0;
-
-    GPTHeader h;
-    if (fseeko(f, 512, SEEK_SET) || fread(&h, 1, sizeof h, f) != sizeof h) { 
-        fclose(f); return 0; 
-    }
-    if (memcmp(h.signature, "EFI PART", 8) != 0) { 
-        fclose(f); return 0; 
-    }
-
-    uint32_t count  = le32toh(h.count);
-    uint32_t entsz  = le32toh(h.entsz);
-    uint64_t ent_lba= le64toh(h.ent_lba);
-    if (entsz < 128 || entsz > 1024 || count > 512) { 
-        fclose(f); return 0; 
-    }
-
-    uint8_t buf[1024];
-    for (uint32_t i = 0; i < count && i < 128; ++i) {
-        off_t off = (off_t)ent_lba * 512 + (off_t)i * entsz;
-        if (fseeko(f, off, SEEK_SET) || fread(buf, 1, entsz, f) != entsz) break;
-
-        const GPTEntry *e = (const GPTEntry*)buf;
-        uint64_t first = le64toh(e->first), last = le64toh(e->last);
-        if (!first && !last) continue;
-
-        char name[37] = {0};
-        for (int k = 0; k < 36; ++k) {
-            uint16_t ch = ((const uint16_t*)e->name)[k];
-            ch = le16toh(ch);
-            if (!ch) break;
-            name[k] = (ch < 0x80) ? (char)ch : '?';
-        }
-        if (strcmp(name, "rootfs") == 0) { 
-            fclose(f); return (int)(i + 1); 
-        }
-    }
-    fclose(f);
-    return 0;
-}
-
-// ---------- Read dm-verity metadata ----------
-static void hex_encode(const uint8_t *src, size_t len, char *dst) {
+static void hex_encode_n(const uint8_t *src, size_t len, char *dst) {
     static const char hexdig[] = "0123456789abcdef";
     for (size_t i = 0; i < len; i++) {
         dst[2*i]     = hexdig[(src[i] >> 4) & 0xf];
@@ -119,190 +84,326 @@ static void hex_encode(const uint8_t *src, size_t len, char *dst) {
     dst[2*len] = '\0';
 }
 
-static int read_verity_metadata(const char *img, 
-                                char *root_hash_hex, 
-                                char *salt_hex,
-                                uint64_t *data_blocks,
-                                uint64_t *hash_start_sector,
-                                uint32_t *data_block_size,
-                                uint32_t *hash_block_size) {
+static void to_lower_str(char *s) {
+    for (; *s; ++s)
+        *s = (char)tolower((unsigned char)*s);
+}
+
+/*
+ * Read the locator (last 4K of disk), then read the 196-byte metadata header
+ * it points to. This mirrors what your kernel module does: it first grabs
+ * the locator footer ("VLOC"), then uses that to find meta + sig.
+ *
+ * We only consume the header fields we need to build dm-mod.create.
+ */
+static int read_verity_header_from_image(const char *img,
+                                         uint64_t *data_blocks,
+                                         uint32_t *data_block_size,
+                                         uint32_t *hash_block_size,
+                                         char     *algo_out,       /* out: algo string */
+                                         char     *root_hash_hex,  /* out: hex digest */
+                                         char     *salt_hex)       /* out: hex salt or "-" */
+{
     FILE *f = fopen(img, "rb");
     if (!f) {
-        fprintf(stderr, "ERROR: Cannot open %s\n", img);
+        fprintf(stderr, "ERROR: cannot open %s: %s\n", img, strerror(errno));
         return -1;
     }
 
-    // Get file size
-    fseeko(f, 0, SEEK_END);
-    off_t size = ftello(f);
-    
-    // Read last 4KB
-    uint8_t tail[4096];
-    fseeko(f, size - 4096, SEEK_SET);
-    if (fread(tail, 1, 4096, f) != 4096) {
-        fprintf(stderr, "ERROR: Cannot read footer\n");
+    /* Find image size */
+    if (fseeko(f, 0, SEEK_END) != 0) {
         fclose(f);
+        fprintf(stderr, "ERROR: ftello fail\n");
+        return -1;
+    }
+    off_t disk_size = ftello(f);
+    if (disk_size < 4096) {
+        fclose(f);
+        fprintf(stderr, "ERROR: image too small\n");
         return -1;
     }
 
-    uint32_t magic = le32toh(*(uint32_t*)tail);
+    /* Read last 4K = locator */
+    off_t locator_off = disk_size - 4096;
+    if (fseeko(f, locator_off, SEEK_SET) != 0) {
+        fclose(f);
+        fprintf(stderr, "ERROR: seek locator failed\n");
+        return -1;
+    }
 
-    if (magic == VERITY_META_MAGIC) {
-        // ATTACHED mode
-        verity_metadata_ondisk *meta = (verity_metadata_ondisk*)tail;
-        
-        *data_blocks = le64toh(meta->data_blocks);
-        *hash_start_sector = le64toh(meta->hash_start_sector);
-        *data_block_size = le32toh(meta->data_block_size);
-        *hash_block_size = le32toh(meta->hash_block_size);
-        
-        uint32_t salt_size = le32toh(meta->salt_size);
-        if (salt_size > 64) salt_size = 64;
-        
-        hex_encode(meta->root_hash, 64, root_hash_hex);
-        hex_encode(meta->salt, salt_size, salt_hex);
-        
-        printf("Found ATTACHED dm-verity metadata\n");
-        
-    } else if (magic == VLOC_MAGIC) {
-        // DETACHED mode
-        verity_footer_locator *loc = (verity_footer_locator*)tail;
-        
-        uint64_t meta_off = le64toh(loc->meta_off);
-        uint32_t meta_len = le32toh(loc->meta_len);
-        
-        // Read metadata region
-        uint8_t meta_buf[256];
-        fseeko(f, meta_off, SEEK_SET);
-        if (fread(meta_buf, 1, meta_len, f) != meta_len) {
-            fprintf(stderr, "ERROR: Cannot read detached metadata\n");
-            fclose(f);
-            return -1;
-        }
-        
-        verity_metadata_ondisk *meta = (verity_metadata_ondisk*)meta_buf;
-        
-        *data_blocks = le64toh(meta->data_blocks);
-        *hash_start_sector = le64toh(meta->hash_start_sector);
-        *data_block_size = le32toh(meta->data_block_size);
-        *hash_block_size = le32toh(meta->hash_block_size);
-        
-        uint32_t salt_size = le32toh(meta->salt_size);
-        if (salt_size > 64) salt_size = 64;
-        
-        hex_encode(meta->root_hash, 64, root_hash_hex);
-        hex_encode(meta->salt, salt_size, salt_hex);
-        
-        printf("Found DETACHED dm-verity metadata\n");
-        
+    verity_footer_locator loc;
+    if (fread(&loc, 1, sizeof(loc), f) != sizeof(loc)) {
+        fclose(f);
+        fprintf(stderr, "ERROR: read locator failed\n");
+        return -1;
+    }
+
+    if (le32toh(loc.magic) != VLOC_MAGIC) {
+        fclose(f);
+        fprintf(stderr, "ERROR: locator magic mismatch (0x%08x)\n",
+                le32toh(loc.magic));
+        return -1;
+    }
+    if (le32toh(loc.version) != 1) {
+        fclose(f);
+        fprintf(stderr, "ERROR: unsupported locator version %u\n",
+                le32toh(loc.version));
+        return -1;
+    }
+
+    uint64_t meta_off = le64toh(loc.meta_off);
+    uint32_t meta_len = le32toh(loc.meta_len);
+
+    if (meta_len < sizeof(verity_header_196)) {
+        fclose(f);
+        fprintf(stderr, "ERROR: meta_len %u too small\n", meta_len);
+        return -1;
+    }
+
+    /* Read the 196-byte verity header */
+    if (fseeko(f, (off_t)meta_off, SEEK_SET) != 0) {
+        fclose(f);
+        fprintf(stderr, "ERROR: seek meta_off failed\n");
+        return -1;
+    }
+
+    verity_header_196 vh;
+    if (fread(&vh, 1, sizeof(vh), f) != sizeof(vh)) {
+        fclose(f);
+        fprintf(stderr, "ERROR: read verity header failed\n");
+        return -1;
+    }
+
+    if (le32toh(vh.magic) != VERITY_META_MAGIC) {
+        fclose(f);
+        fprintf(stderr, "ERROR: VERI magic mismatch (0x%08x)\n",
+                le32toh(vh.magic));
+        return -1;
+    }
+
+    /* Pull out fields we care about */
+    *data_blocks     = le64toh(vh.data_blocks);
+    *data_block_size = le32toh(vh.data_block_size);
+    *hash_block_size = le32toh(vh.hash_block_size);
+
+    /* hash_algorithm[32], sanitize to printable lowercase and NUL-term */
+    char algo_local[33];
+    memset(algo_local, 0, sizeof(algo_local));
+    memcpy(algo_local, vh.hash_algorithm, 32);
+    for (int i = 0; i < 32; i++) {
+        unsigned char c = algo_local[i];
+        if (!c) break;
+        if (c < 32 || c > 126) { algo_local[i] = 0; break; }
+    }
+    to_lower_str(algo_local);
+    strncpy(algo_out, algo_local, 32);
+    algo_out[32] = 0;
+
+    /* root_hash -> hex, but we don't know digest length from header directly.
+     * We assume sha256 (32 bytes) because that's what generate_verity.sh forces.
+     * If you switch to sha512 later, update this to 64.
+     */
+    size_t digest_len = 32; /* sha256 */
+    hex_encode_n(vh.root_hash, digest_len, root_hash_hex);
+
+    /* salt_hex -> hex string */
+    uint32_t salt_size = le32toh(vh.salt_size);
+    if (salt_size > 64) salt_size = 64;
+    if (salt_size == 0) {
+        salt_hex[0] = '-';
+        salt_hex[1] = 0;
     } else {
-        fprintf(stderr, "ERROR: Unknown footer magic 0x%08x\n", magic);
-        fclose(f);
-        return -1;
+        char *p = salt_hex;
+        for (uint32_t i = 0; i < salt_size; i++) {
+            sprintf(p, "%02x", vh.salt[i]);
+            p += 2;
+        }
+        *p = 0;
     }
+
+    /* Log (purely informational / debugging output) */
+    printf("=== Parsed dm-verity header ===\n");
+    printf("  data_blocks        = %llu\n",
+           (unsigned long long)*data_blocks);
+    printf("  data_block_size    = %u\n", *data_block_size);
+    printf("  hash_block_size    = %u\n", *hash_block_size);
+    printf("  algo               = %s\n", algo_out);
+    printf("  root_hash          = %.64s...\n", root_hash_hex);
+    printf("  salt_hex           = %s\n", salt_hex);
+    printf("  hash_start_sector  = %llu (info only)\n",
+           (unsigned long long)le64toh(vh.hash_start_sector));
 
     fclose(f);
-    
-    printf("  root_hash: %.64s...\n", root_hash_hex);
-    printf("  salt: %s\n", salt_hex);
-    printf("  data_blocks: %llu\n", (unsigned long long)*data_blocks);
-    printf("  hash_start_sector: %llu\n", (unsigned long long)*hash_start_sector);
-    
     return 0;
 }
 
-// ---------- QEMU Boot ----------
-static int boot_qemu(const char *kernel, const char *rootfs_img,
-                    const char *root_hash, const char *salt,
-                    uint64_t data_blocks, uint64_t hash_start_sector,
-                    uint32_t data_block_size, uint32_t hash_block_size) {
+/*
+ * Launch QEMU:
+ *   - Build dm-mod.create="..." so dm-init creates /dev/dm-0.
+ *   - root=/dev/dm-0 so kernel mounts verity-protected FS as root.
+ *   - Pass dm_verity_autoboot.autoboot_device=/dev/vda so your kernel module
+ *     finds the disk and verifies the PKCS7 signature after dm-init.
+ */
+static int boot_qemu(const char *kernel,
+                     const char *rootfs_img,
+                     uint64_t data_blocks,
+                     uint32_t data_block_size,
+                     uint32_t hash_block_size,
+                     const char *algo,
+                     const char *root_hash_hex,
+                     const char *salt_hex)
+{
+    /* Sanity: calculate mapping length in 512-byte sectors.
+     * num_sectors = (data_blocks * data_block_size) / 512.
+     * This must be integer or dm will complain.
+     */
+    uint64_t bytes_total = data_blocks * (uint64_t)data_block_size;
+    if (bytes_total % 512ULL) {
+        fprintf(stderr,
+            "FATAL: data_blocks*data_block_size not 512B-aligned (%llu bytes)\n",
+            (unsigned long long)bytes_total);
+        return 1;
+    }
+    uint64_t num_sectors = bytes_total / 512ULL;
 
-    char drive[256];
-    snprintf(drive, sizeof drive,
-             "file=%s,format=raw,if=virtio",
-             rootfs_img);
+    /* In our layout the Merkle tree starts immediately after the data area,
+     * and we used --no-superblock and --hash-offset=<DATA_SIZE>.
+     * dm-verity wants <hash_start_block> in units of hash_block_size.
+     * Because hash starts right after data and data_block_size == hash_block_size,
+     * <hash_start_block> = data_blocks.
+     */
+    uint64_t hash_start_block = data_blocks;
 
-    // Build dm-mod.create= parameter
+    /* Build dm-mod.create= argument.
+     *
+     * dm-mod.create format:
+     *   <name>,<uuid>,<minor>,<flags>,<table...>
+     *
+     * table:
+     *   0 <num_sectors> verity 1 <data_dev> <hash_dev>
+     *                   <data_bs> <hash_bs>
+     *                   <num_data_blocks> <hash_start_block>
+     *                   <algo> <root_digest_hex> <salt_hex_or_dash>
+     *
+     * We pin minor=0 so the device appears as /dev/dm-0 predictably.
+     *
+     * Both data_dev and hash_dev are /dev/vda1.
+     */
+    const char *data_dev = "/dev/vda1";
+    const char *hash_dev = "/dev/vda1";
+
     char dm_create[2048];
-    uint64_t num_sectors = (data_blocks * data_block_size) / 512;
-    
     snprintf(dm_create, sizeof dm_create,
-             "verified_root,,,ro,0 %llu verity 1 253:0 253:0 %u %u %llu %llu sha256 %s %s",
-             num_sectors,
-             data_block_size,
-             hash_block_size,
-             data_blocks,
-             hash_start_sector,
-             root_hash,
-             salt);
+        "verified_root,,0,ro,"
+        "0 %llu verity 1 %s %s %u %u %llu %llu %s %s %s",
+        (unsigned long long)num_sectors,
+        data_dev, hash_dev,
+        data_block_size, hash_block_size,
+        (unsigned long long)data_blocks,
+        (unsigned long long)hash_start_block,
+        algo,
+        root_hash_hex,
+        (salt_hex && salt_hex[0]) ? salt_hex : "-");
 
+    /* Print it so we can see exactly what kernel will get */
+    printf("\n=== dm-mod.create argument ===\n%s\n\n", dm_create);
+
+    /* Now assemble kernel cmdline.
+     *
+     * dm-init parses dm-mod.create and creates /dev/dm-0.
+     * We then say root=/dev/dm-0 so kernel mounts that.
+     * Your module will later verify the PKCS7 and panic if bad.
+     */
     char append[4096];
     snprintf(append, sizeof append,
-         "console=ttyS0 "
-         "dm_verity_autoboot.autoboot_device=/dev/vda "
-         "root=/dev/mapper/verified_root ro rootwait",
-         dm_create);
+        "console=ttyS0,115200 "
+        "loglevel=7 "
+        "initcall_debug "
+        "rootfstype=ext4 "
+        "dm-mod.create=\"%s\" "
+        "dm_verity_autoboot.autoboot_device=/dev/vda "
+        "root=/dev/dm-0 ro rootwait",
+        dm_create);
 
-    printf("\n=== Kernel command line: ===\n%s\n\n", append);
+    printf("=== Kernel command line ===\n%s\n\n", append);
+
+    /* Build QEMU argv */
+    char drive[256];
+    snprintf(drive, sizeof drive,
+             "file=%s,format=raw,if=virtio", rootfs_img);
 
     const char *argv[] = {
         "qemu-system-x86_64",
-        "-m","1024",
-        "-kernel",kernel,
-        "-drive",drive,
-        "-append",append,
+        "-m", "1024",
+        "-kernel", kernel,
+        "-drive", drive,
+        "-append", append,
         "-nographic",
         NULL
     };
 
-    pid_t pid=fork();
-    if(pid==0){ execvp(argv[0],(char*const*)argv); _exit(127); }
-    int st; waitpid(pid,&st,0);
-    return WIFEXITED(st)?WEXITSTATUS(st):1;
-}
-
-// ---------- Main ----------
-int main(void) {
-    printf("=====================================\n");
-    printf("   Bootloader (dm-init MODE)         \n");
-    printf("=====================================\n");
-
-    printf("Skipping signature verification (DEV MODE).\n");
-
-    // Scan GPT
-    int part = gpt_find_rootfs_partition(ROOTFS_IMG);
-    if (part > 0) {
-        printf("Found GPT partition named 'rootfs' (partition %d).\n", part);
-    } else {
-        printf("No GPT partition named 'rootfs' found.\n");
+    pid_t pid = fork();
+    if (pid == 0) {
+        execvp(argv[0], (char * const *)argv);
+        _exit(127);
     }
 
-    // Read dm-verity metadata
-    char root_hash_hex[129], salt_hex[129];
-    uint64_t data_blocks, hash_start_sector;
-    uint32_t data_block_size, hash_block_size;
-    
-    printf("\nReading dm-verity metadata from disk...\n");
-    if (read_verity_metadata(ROOTFS_IMG, root_hash_hex, salt_hex,
-                            &data_blocks, &hash_start_sector,
-                            &data_block_size, &hash_block_size) != 0) {
-        fprintf(stderr, "FATAL: Cannot read dm-verity metadata\n");
+    int st;
+    waitpid(pid, &st, 0);
+    return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
+}
+
+int main(void)
+{
+    printf("=====================================\n");
+    printf("   secondary_bootloader (dm-init mode)\n");
+    printf("=====================================\n");
+
+    /* Pull verity header from disk image so we know:
+     *   - data_blocks
+     *   - block sizes
+     *   - algo / root hash / salt (for dm table)
+     */
+    uint64_t data_blocks = 0;
+    uint32_t data_bs = 0;
+    uint32_t hash_bs = 0;
+    char algo[33] = {0};
+    char root_hash_hex[129] = {0}; /* big enough for sha512 if needed */
+    char salt_hex[129] = {0};
+
+    if (read_verity_header_from_image(
+            ROOTFS_IMG,
+            &data_blocks,
+            &data_bs,
+            &hash_bs,
+            algo,
+            root_hash_hex,
+            salt_hex) != 0) {
+        fprintf(stderr, "FATAL: could not parse verity header from %s\n",
+                ROOTFS_IMG);
         return 1;
     }
 
     printf("\nPress ENTER to boot kernel...\n");
     getchar();
 
-    printf("\n=== ABOUT TO LAUNCH QEMU ===\n");
-    printf("Kernel: %s\n", KERNEL_IMG);
-    printf("Rootfs image (virtio as /dev/vda): %s\n", ROOTFS_IMG);
-    printf("dm-init will create /dev/mapper/verified_root at boot\n");
-    printf("\nPress ENTER again to continue to QEMU...\n");
-    getchar();
+    printf("\n=== Launching QEMU ===\n");
+    printf("Kernel image : %s\n", KERNEL_IMG);
+    printf("Rootfs image : %s (as virtio /dev/vda)\n", ROOTFS_IMG);
+    printf("dm-init will create /dev/dm-0 before mount\n");
+    printf("Your kernel module will verify signature and panic if untrusted\n\n");
 
-    int rc = boot_qemu(KERNEL_IMG, ROOTFS_IMG, root_hash_hex, salt_hex,
-                      data_blocks, hash_start_sector,
-                      data_block_size, hash_block_size);
+    int rc = boot_qemu(
+        KERNEL_IMG,
+        ROOTFS_IMG,
+        data_blocks,
+        data_bs,
+        hash_bs,
+        algo,
+        root_hash_hex,
+        salt_hex
+    );
+
     printf("QEMU exited with code %d\n", rc);
     return rc;
 }
