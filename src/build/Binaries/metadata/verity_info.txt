@@ -1,11 +1,11 @@
-VERITY header information for /dev/loop20
-UUID:            	4ac8800b-65bf-438d-a4c9-083fa928abfc
+VERITY header information for /dev/loop18
+UUID:            	4da20546-07c5-4c09-b603-c2f37f6fbc0e
 Hash type:       	1
 Data blocks:     	107520
 Data block size: 	4096
 Hash blocks:     	848
 Hash block size: 	4096
 Hash algorithm:  	sha256
-Salt:            	443e15f6c8d87a6f4bc80b61bed98a24d93332ff6d9b8b2f34d0308776592d2b
-Root hash:      	c1209b179546df0baa1d86f220470570b53ad3791a2a6f8960ad257b73d500af
+Salt:            	5a686987c76ac8a5b800de5010d9d3567fdaab7e9a782e70e041cd99ea66d9bc
+Root hash:      	699fe3d325029a3026f99e500631fc4092097b48261b07b58268f09cbf9930fe
 Hash device size: 	3477504 [bytes]
