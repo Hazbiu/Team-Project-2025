@@ -73,7 +73,8 @@ typedef struct {
 #pragma pack(pop)
 
 #define VERITY_META_MAGIC  0x56455249  /* "VERI" */
-#define VLOC_MAGIC         0x564C4F43  /* "VLOC" */
+#define VLOC_MAGIC         0x434F4C56  /* "COLV" */
+
 
 static void hex_encode_n(const uint8_t *src, size_t len, char *dst) {
     static const char hexdig[] = "0123456789abcdef";

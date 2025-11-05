@@ -462,40 +462,88 @@ static int verity_autoboot_main(void)
 			__le32 magic = *(__le32 *)tail;
 
 			if (le32_to_cpu(magic) == VERITY_META_MAGIC) {
-				/* ATTACHED */
-				struct verity_metadata_ondisk *meta;
+				u8 *raw;
+				loff_t size2 = i_size_read(file_inode(bdev_file));
+				loff_t pos2 = size2 - VERITY_META_SIZE;
+				struct pkcs7_message *pkcs7;
+				u32 pkcs7_size;
+				u8 digest[32];
+				const u8 *signed_hash;
+				u32 signed_hash_len;
+				enum hash_algo signed_hash_algo;
 
-				meta = kmalloc(sizeof(*meta), GFP_KERNEL);
-				if (!meta) {
+				pr_info("%s: Footer mode: attached (VERI)\n", DM_MSG_PREFIX);
+
+				raw = kmalloc(VERITY_META_SIZE, GFP_KERNEL);
+				if (!raw) {
 					fput(bdev_file);
 					return -ENOMEM;
 				}
 
-				pr_info("%s: Footer mode: attached (VERI)\n", DM_MSG_PREFIX);
-				ret = read_metadata_footer_attached(bdev_file, meta);
-				if (ret) {
-					kfree(meta);
+				if (kernel_read(bdev_file, raw, VERITY_META_SIZE, &pos2) != VERITY_META_SIZE) {
+					pr_err("%s: failed to read full footer\n", DM_MSG_PREFIX);
+					kfree(raw);
 					fput(bdev_file);
-					return ret;
+					return -EIO;
 				}
 
-				ret = verify_signature_pkcs7_attached(meta);
-				if (ret) {
-					kfree(meta);
+				pkcs7_size = le32_to_cpu(*(u32 *)(raw +
+					offsetof(struct verity_metadata_ondisk, pkcs7_size)));
+
+				if (!pkcs7_size || pkcs7_size > VERITY_PKCS7_MAX) {
+					pr_err("%s: bad pkcs7_size %u\n", DM_MSG_PREFIX, pkcs7_size);
+					kfree(raw);
 					fput(bdev_file);
-					pr_emerg("%s: signature verification FAILED (attached), ret=%d\n",
-						 DM_MSG_PREFIX, ret);
+					return -EINVAL;
+				}
+
+				sha256_buf(raw, VERITY_FOOTER_SIGNED_LEN, digest);
+
+				pkcs7 = pkcs7_parse_message(raw +
+					offsetof(struct verity_metadata_ondisk, pkcs7_blob),
+					pkcs7_size);
+				if (IS_ERR(pkcs7)) {
+					pr_emerg("%s: pkcs7_parse_message failed\n", DM_MSG_PREFIX);
+					kfree(raw);
+					fput(bdev_file);
 					panic("dm-verity-autoboot: untrusted rootfs footer");
 				}
 
+				ret = pkcs7_verify(pkcs7, VERIFYING_MODULE_SIGNATURE);
+				if (ret) {
+					pr_emerg("%s: signer NOT trusted\n", DM_MSG_PREFIX);
+					pkcs7_free_message(pkcs7);
+					kfree(raw);
+					fput(bdev_file);
+					panic("dm-verity-autoboot: untrusted rootfs footer");
+				}
+
+				ret = pkcs7_get_digest(pkcs7, &signed_hash, &signed_hash_len, &signed_hash_algo);
+				if (ret || signed_hash_algo != HASH_ALGO_SHA256 || signed_hash_len != 32 ||
+					memcmp(signed_hash, digest, 32) != 0) {
+					pr_emerg("%s: footer digest mismatch\n", DM_MSG_PREFIX);
+					pkcs7_free_message(pkcs7);
+					kfree(raw);
+					fput(bdev_file);
+					panic("dm-verity-autoboot: footer integrity mismatch");
+				}
+
+				pkcs7_free_message(pkcs7);
+
 				pr_info("%s: Signature verification PASSED (attached)\n", DM_MSG_PREFIX);
-				pr_info("%s: dm-init should have already created /dev/mapper/verified_root\n",
-					DM_MSG_PREFIX);
-				kfree(meta);
+
+				/* ✅ Now, and only now, metadata is safe to parse */
+				{
+					struct verity_metadata_ondisk *meta = (struct verity_metadata_ondisk *)raw;
+					read_metadata_footer_attached(bdev_file, meta);
+				}
+
+				pr_info("%s: Verified_root ready\n", DM_MSG_PREFIX);
+				kfree(raw);
 				fput(bdev_file);
 				return 0;
-
-			} else if (le32_to_cpu(magic) == VLOC_MAGIC) {
+			}
+			else if (le32_to_cpu(magic) == VLOC_MAGIC) {
 				/* DETACHED */
 				struct verity_footer_locator loc;
 				u8 *meta_buf = NULL, *sig_buf = NULL;

@@ -1,0 +1,10 @@
+  DESCEND objtool
+  INSTALL libsubcmd_headers
+  CALL    scripts/checksyscalls.sh
+  GEN     modules.builtin.ranges
+/bin/sh: 1: gawk: not found
+make[2]: *** [scripts/Makefile.vmlinux:139: modules.builtin.ranges] Error 127
+make[2]: *** Deleting file 'modules.builtin.ranges'
+make[1]: *** [/home/keti/Team-Project-2025/linux/Makefile:1242: vmlinux] Error 2
+make[1]: *** Waiting for unfinished jobs....
+make: *** [Makefile:248: __sub-make] Error 2
