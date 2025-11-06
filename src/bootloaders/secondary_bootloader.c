@@ -42,7 +42,7 @@
  */
 
 static const char *KERNEL_IMG   = "kernel_image.bin";
-static const char *ROOTFS_IMG   = "rootfs.bad.img";
+static const char *ROOTFS_IMG   = "rootfs.img";
 
 /* --- on-disk dm-verity metadata header (first 196 bytes of VERI) --- */
 #pragma pack(push,1)
@@ -320,7 +320,7 @@ static int boot_qemu(const char *kernel,
         "loglevel=7 "
         "initcall_debug "
         "rootfstype=ext4 "
-        "dm-mod.create=\"%s\" "
+        // "dm-mod.create=\"%s\" "
         "dm_verity_autoboot.autoboot_device=/dev/vda "
         "root=/dev/dm-0 ro rootwait",
         dm_create);

@@ -2,3 +2,5 @@
 # Ignore generated root filesystem
 src/build/Binaries/rootfs/
 src/build/Binaries/rootfs.img
+/src/bootloaders/rootfs.bad.img
+/src/build/Binaries/*.img
