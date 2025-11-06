@@ -711,7 +711,7 @@ static void verity_submit_prefetch(struct dm_verity *v, struct dm_verity_io *io,
  * Bio map function. It allocates dm_verity_io structure and bio vector and
  * fills them. Then it issues prefetches and the I/O.
  */
-static int verity_map(struct dm_target *ti, struct bio *bio)
+int verity_map(struct dm_target *ti, struct bio *bio)
 {
 	struct dm_verity *v = ti->private;
 	struct dm_verity_io *io;
@@ -764,7 +764,7 @@ static void verity_postsuspend(struct dm_target *ti)
 /*
  * Status: V (valid) or C (corruption found)
  */
-static void verity_status(struct dm_target *ti, status_type_t type,
+void verity_status(struct dm_target *ti, status_type_t type,
 			  unsigned int status_flags, char *result, unsigned int maxlen)
 {
 	struct dm_verity *v = ti->private;
@@ -1317,7 +1317,7 @@ static int verity_setup_salt_and_hashstate(struct dm_verity *v, const char *arg)
  *	<digest>
  *	<salt>		Hex string or "-" if no salt.
  */
-static int verity_ctr(struct dm_target *ti, unsigned int argc, char **argv)
+int verity_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
 	struct dm_verity *v;
 	struct dm_verity_sig_opts verify_args = {0};
@@ -1653,7 +1653,7 @@ static inline int verity_security_set_signature(struct block_device *bdev,
  *
  * Returns 0 on success, or -ENOMEM if the system is out of memory.
  */
-static int verity_preresume(struct dm_target *ti)
+int verity_preresume(struct dm_target *ti)
 {
 	struct block_device *bdev;
 	struct dm_verity_digest root_digest;

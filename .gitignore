@@ -1,1 +1,4 @@
 /legecy
+# Ignore generated root filesystem
+src/build/Binaries/rootfs/
+src/build/Binaries/rootfs.img
