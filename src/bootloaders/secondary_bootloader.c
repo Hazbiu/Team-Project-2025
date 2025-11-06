@@ -42,7 +42,7 @@
  */
 
 static const char *KERNEL_IMG   = "kernel_image.bin";
-static const char *ROOTFS_IMG   = "rootfs.img";
+static const char *ROOTFS_IMG   = "rootfs.bad.img";
 
 /* --- on-disk dm-verity metadata header (first 196 bytes of VERI) --- */
 #pragma pack(push,1)
