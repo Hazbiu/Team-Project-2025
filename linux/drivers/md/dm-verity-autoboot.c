@@ -66,20 +66,11 @@ struct verity_footer_locator {
 	u8     reserved[4096 - 32];
 } __packed;
 
-/* ✅ Forward declaration to fix build error */
-static int read_region(struct file *bdev_file, u64 off, u32 len, u8 **out);
+/* ---------------------------------------------------------- */
+/* Utility Helpers (must be defined before used)               */
+/* ---------------------------------------------------------- */
 
-static void dump_hex_short(const char *tag, const u8 *buf, size_t len, size_t max_show)
-{
-	size_t i, show = (len < max_show) ? len : max_show;
-	pr_info("%s: %s: ", DM_MSG_PREFIX, tag);
-	for (i = 0; i < show; i++)
-		pr_cont("%02x", buf[i]);
-	if (len > show)
-		pr_cont("...");
-	pr_cont("\n");
-}
-
+/* SHA256 helper */
 static int sha256_buf(const u8 *buf, size_t len, u8 digest[32])
 {
 	struct crypto_shash *tfm;
@@ -111,17 +102,7 @@ out:
 	return ret;
 }
 
-static void hex_encode(const u8 *src, size_t len, char *dst)
-{
-	static const char hexdig[] = "0123456789abcdef";
-	size_t i;
-	for (i = 0; i < len; i++) {
-		dst[2*i]     = hexdig[(src[i] >> 4) & 0xf];
-		dst[2*i + 1] = hexdig[src[i] & 0xf];
-	}
-	dst[2*len] = '\0';
-}
-
+/* Read region of disk */
 static int read_region(struct file *bdev_file, u64 off, u32 len, u8 **out)
 {
 	loff_t pos = off;
@@ -140,6 +121,7 @@ static int read_region(struct file *bdev_file, u64 off, u32 len, u8 **out)
 	return 0;
 }
 
+/* Lookup block device */
 static int resolve_dev_from_diskname(const char *path, dev_t *out_dev)
 {
 	const char *name;
@@ -164,7 +146,21 @@ static int resolve_dev_from_diskname(const char *path, dev_t *out_dev)
 	return -ENODEV;
 }
 
-/* --- Attached signature verification --- */
+static void dump_hex_short(const char *tag, const u8 *buf, size_t len, size_t max_show)
+{
+	size_t i, show = (len < max_show) ? len : max_show;
+	pr_info("%s: %s: ", DM_MSG_PREFIX, tag);
+	for (i = 0; i < show; i++)
+		pr_cont("%02x", buf[i]);
+	if (len > show)
+		pr_cont("...");
+	pr_cont("\n");
+}
+
+/* ---------------------------------------------------------- */
+/* Signature Verification                                      */
+/* ---------------------------------------------------------- */
+
 static int verify_attached(const struct verity_metadata_ondisk *meta)
 {
 	struct pkcs7_message *pkcs7;
@@ -174,6 +170,8 @@ static int verify_attached(const struct verity_metadata_ondisk *meta)
 	enum hash_algo signed_hash_algo;
 	u32 blob_sz;
 	int ret;
+
+	pr_info("%s: [VERIFY] Attached metadata signature verification started\n", DM_MSG_PREFIX);
 
 	blob_sz = le32_to_cpu(meta->pkcs7_size);
 	if (!blob_sz || blob_sz > VERITY_PKCS7_MAX)
@@ -196,11 +194,11 @@ static int verify_attached(const struct verity_metadata_ondisk *meta)
 		signed_hash_len != 32 ||
 		memcmp(signed_hash, digest, 32) != 0) {
 
-			pr_err("%s: detached metadata signature verification FAILED\n", DM_MSG_PREFIX);
-			ret = -EKEYREJECTED;
+		pr_err("%s: [VERIFY] Attached signature FAILED\n", DM_MSG_PREFIX);
+		ret = -EKEYREJECTED;
 
 	} else {
-			pr_info("%s: detached metadata signature verification SUCCESS\n", DM_MSG_PREFIX);
+		pr_info("%s: [VERIFY] Attached signature PASSED ✅\n", DM_MSG_PREFIX);
 	}
 
 out:
@@ -208,7 +206,6 @@ out:
 	return ret;
 }
 
-/* --- Detached signature verification --- */
 static int verify_detached(const u8 *meta_buf, u32 meta_len,
 			   const u8 *sig_buf,  u32 sig_len)
 {
@@ -218,6 +215,8 @@ static int verify_detached(const u8 *meta_buf, u32 meta_len,
 	u32 signed_hash_len;
 	enum hash_algo signed_hash_algo;
 	int ret;
+
+	pr_info("%s: [VERIFY] Detached metadata signature verification started\n", DM_MSG_PREFIX);
 
 	ret = sha256_buf(meta_buf, meta_len, digest);
 	if (ret)
@@ -243,8 +242,18 @@ static int verify_detached(const u8 *meta_buf, u32 meta_len,
 
 out:
 	pkcs7_free_message(pkcs7);
+
+	if (!ret)
+		pr_info("%s: [VERIFY] Detached signature PASSED ✅\n", DM_MSG_PREFIX);
+	else
+		pr_err("%s: [VERIFY] Detached signature FAILED\n", DM_MSG_PREFIX);
+
 	return ret;
 }
+
+/* ---------------------------------------------------------- */
+/* Metadata Parsing (only runs after verification succeeded!)  */
+/* ---------------------------------------------------------- */
 
 static void check_hash_tree_location(const struct verity_metadata_ondisk *m)
 {
@@ -253,16 +262,12 @@ static void check_hash_tree_location(const struct verity_metadata_ondisk *m)
 	u64 declared_sector  = le64_to_cpu(m->hash_start_sector);
 	u64 expected_sector;
 
-	/* ---- BEGIN DEBUG PRINTS (Metadata Parsing Confirmation) ---- */
-	pr_info("%s: Parsed metadata values:\n", DM_MSG_PREFIX);
-	pr_info("  - hash algorithm     : %s\n", m->hash_algorithm);
-	pr_info("  - data block size    : %u bytes\n", data_block_size);
-	pr_info("  - number of blocks   : %llu\n", (unsigned long long)data_blocks);
-	pr_info("  - declared hash tree : sector %llu\n", (unsigned long long)declared_sector);
-
-	/* Print root hash (first 32 bytes) */
+	pr_info("%s: [PARSE] Metadata parsed successfully\n", DM_MSG_PREFIX);
+	pr_info("  hash algorithm     : %s\n", m->hash_algorithm);
+	pr_info("  data block size    : %u bytes\n", data_block_size);
+	pr_info("  number of blocks   : %llu\n", (unsigned long long)data_blocks);
+	pr_info("  declared hash tree : sector %llu\n", (unsigned long long)declared_sector);
 	dump_hex_short("root_hash", m->root_hash, 32, 32);
-	/* ---- END DEBUG PRINTS ---- */
 
 	if (!data_block_size || (data_block_size % 512)) {
 		pr_emerg("%s: INVALID data_block_size %u\n", DM_MSG_PREFIX, data_block_size);
@@ -272,21 +277,18 @@ static void check_hash_tree_location(const struct verity_metadata_ondisk *m)
 	expected_sector = data_blocks * (data_block_size / 512ULL);
 
 	if (declared_sector != expected_sector) {
-		pr_emerg("%s: HASH TREE LOCATION MISMATCH!\n", DM_MSG_PREFIX);
-		pr_emerg("%s: expected sector=%llu, got=%llu\n",
-			 DM_MSG_PREFIX,
-			 (unsigned long long)expected_sector,
-			 (unsigned long long)declared_sector);
+		pr_emerg("%s: HASH TREE LOCATION MISMATCH\n", DM_MSG_PREFIX);
 		panic("dm-verity-autoboot: hash tree location mismatch");
 	}
 
-	/* ✅ Final success confirmation */
-	pr_info("%s: ✅ hash tree location verified (sector=%llu)\n",
+	pr_info("%s: Parsing Successful, hash tree location verified ✅ (sector=%llu)\n",
 		DM_MSG_PREFIX, (unsigned long long)declared_sector);
 }
 
+/* ---------------------------------------------------------- */
+/* Main boot-check logic                                      */
+/* ---------------------------------------------------------- */
 
-/* ---- Main ---- */
 static int verity_autoboot_main(void)
 {
 	struct file *bdev_file;
@@ -325,6 +327,8 @@ static int verity_autoboot_main(void)
 				return -ENOMEM;
 			}
 
+			pr_info("%s: [READ] Found attached metadata footer\n", DM_MSG_PREFIX);
+
 			pos = sz - VERITY_META_SIZE;
 			if (kernel_read(bdev_file, meta, VERITY_META_SIZE, &pos) != VERITY_META_SIZE) {
 				kfree(meta);
@@ -332,13 +336,15 @@ static int verity_autoboot_main(void)
 				return -EIO;
 			}
 
+			/* VERIFY BEFORE PARSE */
 			ret = verify_attached(meta);
 			if (ret) {
 				kfree(meta);
 				fput(bdev_file);
-				panic("dm-verity-autoboot: untrusted attached footer");
+				panic("dm-verity-autoboot: attached signature INVALID");
 			}
 
+			/* PARSE AFTER SUCCESSFUL VERIFY */
 			check_hash_tree_location(meta);
 
 			kfree(meta);
@@ -350,6 +356,8 @@ static int verity_autoboot_main(void)
 		else if (le32_to_cpu(*(__le32 *)tail) == VLOC_MAGIC) {
 			struct verity_footer_locator loc;
 			u8 *meta_buf = NULL, *sig_buf = NULL;
+
+			pr_info("%s: [READ] Found detached metadata footer\n", DM_MSG_PREFIX);
 
 			memcpy(&loc, tail, sizeof(loc));
 
@@ -368,15 +376,17 @@ static int verity_autoboot_main(void)
 				return ret;
 			}
 
+			/* VERIFY BEFORE PARSE */
 			ret = verify_detached(meta_buf, le32_to_cpu(loc.meta_len),
 					      sig_buf,  le32_to_cpu(loc.sig_len));
 			if (ret) {
 				kfree(sig_buf);
 				kfree(meta_buf);
 				fput(bdev_file);
-				panic("dm-verity-autoboot: untrusted detached metadata");
+				panic("dm-verity-autoboot: detached signature INVALID");
 			}
 
+			/* PARSE AFTER SUCCESSFUL VERIFY */
 			check_hash_tree_location((struct verity_metadata_ondisk *)meta_buf);
 
 			kfree(sig_buf);
