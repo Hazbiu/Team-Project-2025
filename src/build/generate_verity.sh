@@ -1,4 +1,39 @@
 #!/bin/bash
+
+# -----------------------------------------------------------------------------
+# generate_verity.sh
+#
+# Purpose:
+#   Generates dm-verity integrity metadata for a root filesystem stored inside
+#   a GPT-partitioned disk image, using *detached* PKCS#7 signatures.
+#
+#   1. Attaches the disk image via loop device and identifies the rootfs partition.
+#   2. Determines filesystem block layout and calculates required Merkle tree size.
+#   3. If necessary, shrinks the filesystem to make room for the hash tree.
+#   4. Uses veritysetup format (no-superblock mode) to generate Merkle hash tree
+#      directly inside the same partition after the filesystem contents.
+#   5. Extracts the root hash and salt.
+#   6. Builds a compact 196-byte verity metadata header.
+#   7. Produces a detached PKCS#7 signature over the header using a private key.
+#   8. Writes header, signature, and a 4KB "VLOC" locator footer to the end of
+#      the disk image.
+#
+# Outputs (stored in Binaries/metadata/):
+#   - verity_info.txt       (veritysetup raw information)
+#   - root.hash             (Merkle root)
+#   - verity_header.bin     (signed 196-byte header input)
+#   - verity_header.sig     (detached PKCS#7 signature, DER format)
+#   - verity_locator.bin    (locator footer to find metadata at boot time)
+#
+# Disk structure:
+#   [ext4 data][Merkle tree][196-byte metadata][PKCS#7 signature][4KB locator]
+#
+# Next Step:
+#   The secondary bootloader passes dm-verity parameters to the kernel.
+#   The kernel module verifies the detached metadata signature at boot.
+#
+# -----------------------------------------------------------------------------
+
 set -euo pipefail
 
 echo "========================================"
@@ -12,9 +47,9 @@ ROOTFS_IMG="$BIN_DIR/rootfs.img"
 ROOT_HASH_FILE="$META_DIR/root.hash"
 
 # Detached signature artifacts
-METADATA_HEADER="$META_DIR/verity_header.bin"      # 196-byte signed header (input to signature)
-SIG_FILE="$META_DIR/verity_header.sig"             # Detached PKCS7 signature (DER)
-LOCATOR_FILE="$META_DIR/verity_locator.bin"        # 4KB locator footer
+METADATA_HEADER="$META_DIR/verity_header.bin"      
+SIG_FILE="$META_DIR/verity_header.sig"             
+LOCATOR_FILE="$META_DIR/verity_locator.bin"      
 
 # Signing key + cert
 PRIV_KEY="$BUILD_DIR/../boot/bl_private.pem"
@@ -22,7 +57,6 @@ CERT_FILE="$BUILD_DIR/../boot/bl_cert.pem"
 
 mkdir -p "$META_DIR"
 
-# --- sanity checks ---
 [[ -f "$ROOTFS_IMG" ]] || { echo "ERROR: rootfs.img not found: $ROOTFS_IMG"; exit 1; }
 [[ -f "$PRIV_KEY"   ]] || { echo "ERROR: bl_private.pem not found: $PRIV_KEY"; exit 1; }
 [[ -f "$CERT_FILE"  ]] || { echo "ERROR: bl_cert.pem not found:  $CERT_FILE"; exit 1; }
@@ -54,7 +88,7 @@ echo "  Filesystem block size : $BLOCK_SIZE bytes"
 echo "  Filesystem block count: $BLOCK_COUNT blocks"
 echo "  Partition size        : $PART_SIZE bytes ($PART_SIZE_BLOCKS blocks)"
 
-# Where the hash tree begins (immediately after FS data)
+
 DATA_SIZE=$((BLOCK_COUNT * BLOCK_SIZE))
 HASH_OFFSET=$DATA_SIZE
 HASH_OFFSET_SECTORS=$((HASH_OFFSET / 512))

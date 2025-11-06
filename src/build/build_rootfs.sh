@@ -1,4 +1,21 @@
 #!/bin/bash
+# -----------------------------------------------------------------------------
+# build_rootfs.sh
+#
+# Purpose:
+#   Creates a bootable Debian root filesystem and places it into a GPT-partitioned
+#   disk image suitable for dm-verity protection.
+#
+#   1. Generates (or reuses) a minimal Debian rootfs using debootstrap.
+#   2. Configures accounts, hostname, networking, and cleans package cache.
+#   3. Creates a temporary ext4 filesystem image and copies the rootfs into it.
+#   4. Allocates a full disk image with a GPT partition table.
+#   5. Writes the filesystem into the partition and reserves space for the
+#      future dm-verity Merkle tree + detached metadata.
+#
+# Output:
+#   Binaries/rootfs.img  → GPT disk image with an ext4 partition labeled "rootfs".
+# -----------------------------------------------------------------------------\
 set -euo pipefail
 
 echo "========================================"
@@ -6,15 +23,15 @@ echo "  Building Rootfs on GPT Disk Image"
 echo "========================================"
 
 # Paths
-BUILD_DIR="$(cd "$(dirname "$0")" && pwd)" # Working script location
-ROOTFS_DIR="$BUILD_DIR/Binaries/rootfs" # Location of rootfs (Root file system)
-OUTPUT_IMG="$BUILD_DIR/Binaries/rootfs.img" # Final image
-TEMP_FS="$BUILD_DIR/Binaries/temp_rootfs.img" # Temporary file
+BUILD_DIR="$(cd "$(dirname "$0")" && pwd)" 
+ROOTFS_DIR="$BUILD_DIR/Binaries/rootfs" 
+OUTPUT_IMG="$BUILD_DIR/Binaries/rootfs.img" 
+TEMP_FS="$BUILD_DIR/Binaries/temp_rootfs.img" 
 
 echo "[1/4] Creating base Debian rootfs..."
 mkdir -p "$ROOTFS_DIR"
 
-# Only install Debian if it's not built already
+
 if [ ! -d "$ROOTFS_DIR/etc" ]; then
     echo "  Installing Debian base system..."
     
@@ -31,7 +48,6 @@ fi
 
 echo "[2/4] Configuring rootfs..."
 
-# Enters the newly created Debian
 sudo chroot "$ROOTFS_DIR" bash -c "  
 set -e
 export DEBIAN_FRONTEND=noninteractive
@@ -62,28 +78,28 @@ rm -rf /var/lib/apt/lists/*
 "
 echo "  Basic configuration done"
 
-# Removes and then recreates system folders so no host data is copied
+
 sudo rm -rf "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" "$ROOTFS_DIR/dev"
 mkdir -p "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" "$ROOTFS_DIR/dev"
 
 echo "[3/4] Creating temporary ext4 filesystem..."
 
-# Calculate the root filesystem size so the filesystem image ia large enough to hold the entire root filesystem plus some extra space
+
 ROOTFS_SIZE_MB=$(sudo du -s --block-size=1M "$ROOTFS_DIR" 2>/dev/null | awk '{print int($1*1.2)+100}')
 echo "  Filesystem (data only): ${ROOTFS_SIZE_MB}MB"
 
-# Create a blank, formatted ext4 filesystem so it can be mounted later
+
 truncate -s "${ROOTFS_SIZE_MB}M" "$TEMP_FS"
 mkfs.ext4 -F -L rootfs "$TEMP_FS" >/dev/null 2>&1
 
-# Mount and copy rootfs
-sudo mkdir -p /mnt/temp-rootfs #Temporary mount directory
-sudo mount "$TEMP_FS" /mnt/temp-rootfs # Mounts the ext4 filesystem
+
+sudo mkdir -p /mnt/temp-rootfs 
+sudo mount "$TEMP_FS" /mnt/temp-rootfs 
 echo "  Copying files to filesystem..." 
-sudo rsync -aHAX --info=progress2 "$ROOTFS_DIR"/ /mnt/temp-rootfs/ # Copies files from ROOTFS_DIR into the mounted image
+sudo rsync -aHAX --info=progress2 "$ROOTFS_DIR"/ /mnt/temp-rootfs/ 
 sync
-sudo umount /mnt/temp-rootfs # Unmounts the file system
-sudo rmdir /mnt/temp-rootfs # Removes the temporary mount directory
+sudo umount /mnt/temp-rootfs 
+sudo rmdir /mnt/temp-rootfs 
 echo "  Temporary filesystem created"
 
 echo "[4/4] Creating GPT-partitioned disk image..."
@@ -107,7 +123,7 @@ truncate -s "${DISK_SIZE_MB}M" "$OUTPUT_IMG"
 echo "  Creating GPT partition table..."
 parted -s "$OUTPUT_IMG" mklabel gpt
 
-# Names the partition "rootfs" and marks it as bootable (Gurarantees all systems can recognise it as a startup partition)
+
 parted -s "$OUTPUT_IMG" mkpart primary ext4 1MiB ${PARTITION_SIZE_MB}MiB
 parted -s "$OUTPUT_IMG" name 1 rootfs
 parted -s "$OUTPUT_IMG" set 1 boot on
@@ -158,7 +174,7 @@ echo "  Partition 1 info:"
 echo "    $PART_INFO"
 echo
 
-# Detach loop device, remove the temp file and fix image ownership (prevents resource locks)
+# Detach loop device, remove the temp file and fix image ownership 
 sudo losetup -d "$LOOP_DEV"
 rm -f "$TEMP_FS"
 sudo chown "$USER:$USER" "$OUTPUT_IMG"
