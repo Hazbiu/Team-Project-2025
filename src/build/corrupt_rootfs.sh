@@ -167,3 +167,5 @@ if (( LINK )); then
 else
   echo "(symlink not updated: --no-link set)"
 fi
+
+# End

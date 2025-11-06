@@ -35,3 +35,5 @@ src/build/corrupt_rootfs.sh --link-good
 ```bash
 readlink -f src/bootloaders/rootfs.img  # should point to ...rootfs.bad.img
 ```
+
+.
