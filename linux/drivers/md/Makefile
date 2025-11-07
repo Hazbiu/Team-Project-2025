@@ -73,7 +73,10 @@ obj-$(CONFIG_DM_ZERO)		+= dm-zero.o
 obj-$(CONFIG_DM_RAID)		+= dm-raid.o
 obj-$(CONFIG_DM_THIN_PROVISIONING) += dm-thin-pool.o
 obj-$(CONFIG_DM_VERITY)		   += dm-verity.o
-obj-$(CONFIG_DM_VERITY_AUTOBOOT) += dm-verity-autoboot.o
+obj-$(CONFIG_DM_VERITY_AUTOBOOT) += dm-verity-autoboot-core.o \
+				     dm-verity-autoboot-verify.o \
+				     dm-verity-autoboot-parse.o \
+				     dm-verity-autoboot-utils.o
 # obj-$(CONFIG_DM_VERITY_SIGNED) += dm-verity-signed.o
 obj-$(CONFIG_DM_VDO)            += dm-vdo/
 obj-$(CONFIG_DM_PCACHE)		+= dm-pcache/
