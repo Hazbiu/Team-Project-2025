@@ -20,5 +20,5 @@ The script runs through three automated stages:
 
 # Usage
 
-bash
+bash.
 ./launch_boot.sh [options]
