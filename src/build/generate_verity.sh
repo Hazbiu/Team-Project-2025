@@ -139,7 +139,7 @@ import struct, binascii
 MAGIC = 0x56455249  # "VERI"
 VERSION = 1
 DATA_BLOCKS = ${BLOCK_COUNT}
-HASH_START_SECTOR = ${HASH_OFFSET_SECTORS}   # sectors, relative to vda1
+HASH_START_SECTOR = ${HASH_OFFSET_SECTORS}   # sectors, relative to the partition
 DATA_BLOCK_SIZE = ${BLOCK_SIZE}
 HASH_BLOCK_SIZE = ${BLOCK_SIZE}
 HASH_ALGORITHM = b"sha256"
@@ -234,6 +234,7 @@ echo "On-disk layout (end of disk):"
 echo "  [...ext4 data...][hash tree @ $HASH_OFFSET][metadata@$META_OFFSET][sig@$SIG_OFFSET][locator@$LOCATOR_OFFSET]"
 echo
 echo "Boot flow (no initramfs):"
-echo "  - dm-init consumes dm-mod.create= and creates /dev/dm-0 from vda1"
-echo "  - your module runs later (verify-only) and panics if untrusted"
-echo "  - kernel mounts root=/dev/dm-0"
+echo "  - Bootloader passes partition path only (e.g., /dev/vda1)"
+echo "  - Kernel module loads, reads locator+metadata, verifies PKCS7"
+echo "  - Kernel module creates /dev/mapper/verity_root in-kernel"
+echo "  - Kernel mounts root=/dev/mapper/verity_root"
