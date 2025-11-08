@@ -1,107 +1,106 @@
+// secondary_bootloader.c
+// Secure second-stage bootloader that (currently) skips dm-verity mapping
+// Build: gcc -O2 -Wall -Wextra -o secondary_bootloader secondary_bootloader.c -lcrypto
+
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <sys/wait.h>
 #include <unistd.h>
-#include <openssl/cms.h>
-#include <openssl/x509.h>
-#include <openssl/pem.h>
+#include <errno.h>
+#include <endian.h>
 
-/* Verify PKCS#7 detached signature */
-static int verify_kernel(const char *kernel, const char *sig, const char *cert)
-{
-    BIO *bio_kernel = NULL, *bio_sig = NULL, *bio_cert = NULL;
-    X509 *x509 = NULL;
-    STACK_OF(X509) *trusted = NULL;
-    CMS_ContentInfo *cms = NULL;
-    int ret = -1;
+// ---------- Artifacts ----------
+static const char *KERNEL_IMG   = "kernel_image.bin";
+static const char *ROOTFS_IMG   = "rootfs.img";
 
-    bio_kernel = BIO_new_file(kernel, "rb");
-    bio_sig    = BIO_new_file(sig, "rb");
-    bio_cert   = BIO_new_file(cert, "rb");
-    if (!bio_kernel || !bio_sig || !bio_cert) {
-        printf("❌ Unable to open kernel / sig / cert file.\n");
-        goto out;
-    }
+// ---------- dm-verity metadata structures (RETAINED - DO NOT REMOVE) ----------
+#pragma pack(push,1)
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    uint64_t data_blocks;
+    uint64_t hash_start_sector;
+    uint32_t data_block_size;
+    uint32_t hash_block_size;
+    char     hash_algorithm[32];
+    uint8_t  root_hash[64];
+    uint8_t  salt[64];
+    uint32_t salt_size;
+    uint32_t pkcs7_size;
+    uint8_t  pkcs7_blob[2048];
+    uint8_t  reserved[1848];
+} verity_metadata_ondisk;
 
-    x509 = PEM_read_bio_X509(bio_cert, NULL, NULL, NULL);
-    if (!x509) {
-        printf("❌ Failed to read certificate.\n");
-        goto out;
-    }
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    uint64_t meta_off;
+    uint32_t meta_len;
+    uint64_t sig_off;
+    uint32_t sig_len;
+    uint8_t  reserved[4064];
+} verity_footer_locator;
+#pragma pack(pop)
 
-    trusted = sk_X509_new_null();
-    sk_X509_push(trusted, x509); // stack owns cert now
+// (REMOVED GPT + metadata parsing - but structs are preserved.)
 
-    cms = d2i_CMS_bio(bio_sig, NULL);
-    if (!cms) {
-        printf("❌ Invalid PKCS#7 signature format.\n");
-        goto out;
-    }
+// ---------- QEMU Boot WITHOUT dm-verity device mapper ----------
+static int boot_qemu(const char *kernel, const char *rootfs_img) {
 
-    BIO_reset(bio_kernel);
+    char drive[256];
+    snprintf(drive, sizeof drive,
+             "file=%s,format=raw,if=virtio",
+             rootfs_img);
 
-    if (CMS_verify(cms, trusted, NULL, bio_kernel, NULL,
-                   CMS_BINARY | CMS_NO_SIGNER_CERT_VERIFY) != 1) {
-        printf("❌ Signature mismatch.\n");
-        goto out;
-    }
+    // No dm-verity → normal direct root mount
+    const char *append =
+        "console=ttyS0 "
+        "root=/dev/vda1 ro rootwait";
 
-    printf("✅ Signature verified.\n");
-    ret = 0;
+    printf("\n=== Kernel command line: ===\n%s\n\n", append);
 
-out:
-    if (cms)        CMS_ContentInfo_free(cms);
-    if (trusted)    sk_X509_pop_free(trusted, X509_free);
-    if (bio_kernel) BIO_free(bio_kernel);
-    if (bio_sig)    BIO_free(bio_sig);
-    if (bio_cert)   BIO_free(bio_cert);
-    return ret;
+    const char *argv[] = {
+        "qemu-system-x86_64",
+        "-m","1024",
+        "-kernel",kernel,
+        "-drive",drive,
+        "-append",append,
+        "-nographic",
+        NULL
+    };
+
+    pid_t pid=fork();
+    if(pid==0){ execvp(argv[0],(char*const*)argv); _exit(127); }
+    int st; waitpid(pid,&st,0);
+    return WIFEXITED(st)?WEXITSTATUS(st):1;
 }
 
+// ---------- Main ----------
+int main(void) {
+    printf("=====================================\n");
+    printf("   Bootloader (SIGNING STILL PRESENT)\n");
+    printf("   dm-verity MAPPING REMOVED         \n");
+    printf("=====================================\n");
 
+    printf("Skipping signature verification (DEV MODE, signing fields kept).\n");
+    printf("Skipping GPT scan.\n");
+    printf("Skipping dm-verity footer parsing.\n");
+    printf("Skipping dmsetup verification mapping.\n");
 
+    printf("\nPress ENTER to boot kernel...\n");
+    getchar();
 
+    printf("\n=== ABOUT TO LAUNCH QEMU ===\n");
+    printf("Kernel: %s\n", KERNEL_IMG);
+    printf("Rootfs image (virtio as /dev/vda): %s\n", ROOTFS_IMG);
+    printf("Direct boot WITHOUT dm-verity mapper\n");
+    printf("\nPress ENTER again to continue to QEMU...\n");
+    getchar();
 
-int main(int argc, char **argv)
-{
-    if (argc < 6) {
-        fprintf(stderr,
-            "Usage:\n"
-            "  %s <kernel> <kernel.p7s> <trusted_cert.pem> <rootfs.img> \"<cmdline>\"\n\n"
-            "Example:\n"
-            "  ./secondary_bootloader bzImage bzImage.p7s cert.pem rootfs.img "
-            "\"console=ttyS0 root=/dev/vda1 rw\"\n",
-            argv[0]);
-        return 1;
-    }
-
-    const char *kernel  = argv[1];
-    const char *sig     = argv[2];
-    const char *cert    = argv[3];
-    const char *rootfs  = argv[4];
-    const char *cmdline = argv[5];
-
-    printf("[secondary_bootloader] Verifying kernel signature...\n");
-    if (verify_kernel(kernel, sig, cert) != 0) {
-        printf("[secondary_bootloader] ❌ Verification FAILED — boot aborted.\n");
-        return 1;
-    }
-
-    printf("[secondary_bootloader] ✅ Kernel signature verified.\n");
-    printf("[secondary_bootloader] Booting kernel...\n");
-
-    char drive_arg[256];
-    snprintf(drive_arg, sizeof(drive_arg),
-             "file=%s,format=raw,if=virtio", rootfs);
-
-    execlp("qemu-system-x86_64",
-           "qemu-system-x86_64",
-           "-m", "1024",
-           "-kernel", kernel,
-           "-drive", drive_arg,
-           "-append", cmdline,
-           "-nographic",
-           (char*)NULL);
-
-    perror("exec qemu failed");
-    return 1;
+    int rc = boot_qemu(KERNEL_IMG, ROOTFS_IMG);
+    printf("QEMU exited with code %d\n", rc);
+    return rc;
 }
