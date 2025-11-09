@@ -42,7 +42,7 @@ int main(void)
     printf("  - Passes device path parameter\n\n");
 
     printf("The kernel module will:\n");
-    printf("  1. Wait for /dev/vda1 to appear\n");
+    printf("  1. Wait for /dev/vda to appear\n");
     printf("  2. Read metadata from end of disk\n");
     printf("  3. Verify PKCS7 signature\n");
     printf("  4. Create /dev/dm-0 device\n");
