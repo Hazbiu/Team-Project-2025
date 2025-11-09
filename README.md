@@ -71,7 +71,7 @@ repo/
     secondary_bootloader  # compiled binary (bootloader executable)
 
   build/               # build scripts and output
-    run_demo.sh        # unified boot script (name may differ in your repo)
+    launch_boot.sh        # unified boot script (name may differ in your repo)
     build_rootfs.sh
     generate_verity.sh
     corrupt_rootfs.sh
@@ -391,7 +391,7 @@ The first script you pasted is a **unified boot script** that:
 2. Generates dm-verity metadata.
 3. Launches the bootloader.
 
-For the README, we’ll call it `run_demo.sh` (adjust to your actual filename).
+For the README, we’ll call it `launch_boot.sh` (adjust to your actual filename).
 
 **Script responsibilities:**
 
@@ -459,7 +459,7 @@ Assuming you’re in the `build/` directory:
 
 ```bash
 cd build
-./run_demo.sh
+./launch_boot.sh
 ```
 
 What it does:
