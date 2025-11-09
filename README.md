@@ -510,7 +510,7 @@ You should see:
 From `build/`:
 
 ```bash
-./corrupt_rootfs.sh meta1 Binaries/rootfs.img --inplace
+./corrupt_rootfs.sh meta1 --inplace
 ```
 
 Then boot:
@@ -530,7 +530,7 @@ Expected behavior:
 
 ```bash
 cd build
-./corrupt_rootfs.sh sig1 Binaries/rootfs.img --inplace
+./corrupt_rootfs.sh sig1 --inplace
 ```
 
 Then boot as before.
