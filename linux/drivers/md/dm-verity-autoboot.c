@@ -2,10 +2,29 @@
 /*
  * dm-verity-autoboot.c
  *
- * 1. Read dm-verity metadata (attached or detached PKCS7).
- * 2. Verify PKCS7 signature against kernel trusted keyring.
- * 3. If trusted, create a dm-verity mapping on the given block device.
- * 4. Rootfs is then mounted as root=/dev/dm-0 (no initramfs, no dm-mod.create=).
+ * Built-in helper for early-boot dm-verity on a whole-disk image.
+ *
+ * Boot flow overview:
+ *
+ *   Bootloader:
+ *     - Passes the whole-disk device path via kernel cmdline:
+ *
+ *         dm_verity_autoboot.autoboot_device=/dev/vda
+ *         root=/dev/dm-0 rootfstype=ext4 rootwait ...
+ *
+ *   This module:
+ *     1. Resolves the block device for autoboot_device (e.g. /dev/vda)
+ *     2. Reads the last 4 KiB of the device
+ *     3. Distinguishes:
+ *          - Attached footer ("VERI"): 4 KiB footer = header + PKCS7
+ *          - Detached footer ("VLOC"): footer is a locator pointing to:
+ *                [ ... data ... ][hash tree][header][signature][locator]
+ *     4. Verifies a PKCS7 signature (using the kernel trusted keyring)
+ *        over the 196-byte metadata header.
+ *     5. Uses dm_early_create() to create a dm-verity mapping:
+ *            name="verity_root"  → typically /dev/dm-0
+ *   Core kernel:
+ *     - Mounts /dev/dm-0 as the ext4 root filesystem.
  */
 
 #include <linux/init.h>
@@ -26,14 +45,14 @@
 #include <crypto/pkcs7.h>
 #include <crypto/hash_info.h>
 #include <linux/device-mapper.h>
+#include <linux/dm-ioctl.h>
 
 #define DM_MSG_PREFIX              "verity-autoboot"
 
 #define VERITY_META_SIZE           4096
 #define VERITY_META_MAGIC          0x56455249 /* "VERI" */
-#define VERITY_FOOTER_SIGNED_LEN   196
+#define VERITY_FOOTER_SIGNED_LEN   196        /* bytes covered by PKCS7 */
 #define VERITY_PKCS7_MAX           2048
-
 #define VLOC_MAGIC                 0x564C4F43 /* "VLOC" */
 
 static char *autoboot_device;
@@ -41,21 +60,29 @@ module_param(autoboot_device, charp, 0);
 MODULE_PARM_DESC(autoboot_device,
 	"Whole-disk block dev (e.g. /dev/vda) containing verity metadata+locator");
 
-/* First 196 bytes of metadata (what we sign & verify) */
+/*
+ * First 196 bytes of metadata header (this is what we sign & verify).
+ * The layout matches both:
+ *   - the leading part of the attached 4K footer, and
+ *   - the detached header region when using the VLOC locator.
+ */
 struct verity_metadata_header {
 	__le32 magic;
 	__le32 version;
 	__le64 data_blocks;
-	__le64 hash_start_sector; /* in 512-byte sectors */
+	__le64 hash_start_sector; /* 512-byte sectors on this block device (for logging / tooling) */
 	__le32 data_block_size;
 	__le32 hash_block_size;
 	char   hash_algorithm[32];
-	u8     root_hash[64];     /* we use first digest_size bytes */
-	u8     salt[64];
+	u8     root_hash[64];      /* first 32 bytes used (SHA-256) */
+	u8     salt[64];           /* salt (<=64 bytes), padded */
 	__le32 salt_size;
 } __packed;
 
-/* Full attached 4K footer */
+/*
+ * Full attached 4K footer ("VERI"):
+ *   [header (196 bytes)] [salt_size/pkcs7_size] [PKCS7 DER] [padding]
+ */
 struct verity_metadata_ondisk {
 	__le32 magic;
 	__le32 version;
@@ -72,7 +99,11 @@ struct verity_metadata_ondisk {
 	u8     reserved[4096 - 2248];
 } __packed;
 
-/* Detached locator footer */
+/*
+ * Detached locator footer ("VLOC"), always at the last 4 KiB:
+ *   - meta_off/meta_len: header region (196 bytes, padded to 4K)
+ *   - sig_off/sig_len  : PKCS7 (DER) region
+ */
 struct verity_footer_locator {
 	__le32 magic;
 	__le32 version;
@@ -128,12 +159,16 @@ out:
 	return ret;
 }
 
+/* Compute SHA-256 over the first VERITY_FOOTER_SIGNED_LEN bytes of the footer */
 static int compute_footer_digest(const struct verity_metadata_ondisk *meta,
 				 u8 digest[32])
 {
 	return sha256_buf((const u8 *)meta, VERITY_FOOTER_SIGNED_LEN, digest);
 }
 
+/*
+ * Read an arbitrary region (meta or sig) from the block device file.
+ */
 static int read_region(struct file *bdev_file, u64 off, u32 len, u8 **out)
 {
 	loff_t pos = off;
@@ -171,7 +206,7 @@ static void hex_encode(const u8 *src, size_t len, char *dst)
 
 /*
  * Resolve "/dev/vda" or "vda" to a dev_t by matching gendisk->disk_name.
- * Does NOT depend on /dev nodes existing.
+ * This does NOT depend on /dev/ nodes existing, so it works early in boot.
  */
 static int resolve_dev_from_diskname(const char *path, dev_t *out_dev)
 {
@@ -229,7 +264,7 @@ static int read_metadata_footer_attached(struct file *f,
 		return -EINVAL;
 	}
 
-	/* Log parsed header fields */
+	/* Log parsed header fields (interpreting the leading 196 bytes) */
 	{
 		const struct verity_metadata_header *h =
 			(const struct verity_metadata_header *)meta;
@@ -440,22 +475,29 @@ out_free:
 }
 
 /* ---- Create dm-verity mapping after successful verification ---- */
-
+/*
+ * Create the dm-verity mapping using dm_early_create(), i.e. the same
+ * internal path used by dm-mod.create= / dm-init. This avoids having to
+ * hand-roll dm_create/dm_swap_table/dm_resume correctly across kernels.
+ */
 static int dm_verity_autoboot_create_mapping(dev_t data_dev,
 					     const struct verity_metadata_header *h)
 {
-	struct mapped_device *md;
-	struct dm_table *table, *old_table;
-	char params[512];
-	char dev_str[32];
+	struct dm_ioctl dmi;
+	struct dm_target_spec *spec;
+	struct dm_target_spec *spec_array[1];
+	char *params = NULL;
+	char *params_array[1];
+
 	char algo[33];
 	char root_hex[129];
 	char salt_hex[129];
 	u32 version, data_bs, hash_bs, salt_size;
-	u64 data_blocks, hash_start_sector, hash_start_block;
-	sector_t len;
+	u64 data_blocks, hash_start_sector;
+	u64 hash_start_block;
 	u32 sectors_per_block;
-	int r;
+	sector_t num_data_sectors;
+	int ret;
 
 	version           = le32_to_cpu(h->version);
 	data_blocks       = le64_to_cpu(h->data_blocks);
@@ -504,95 +546,113 @@ static int dm_verity_autoboot_create_mapping(dev_t data_dev,
 	if (salt_size > 64)
 		salt_size = 64;
 
-	sectors_per_block = data_bs >> 9;
-	len = (sector_t)data_blocks * sectors_per_block;
-	hash_start_block = (hash_start_sector * 512ULL) / hash_bs;
+	sectors_per_block = data_bs >> 9; /* /512 */
+	num_data_sectors  = (sector_t)data_blocks * sectors_per_block;
 
+	/*
+	 * dm-verity table format (version 1):
+	 *
+	 *   <version> <data_dev> <hash_dev> <data_bs> <hash_bs>
+	 *   <num_data_blocks> <hash_start_block> <algo> <root> <salt>
+	 *
+	 * In our layout (single whole disk):
+	 *   - data occupies blocks [0 .. data_blocks-1]
+	 *   - hash tree starts immediately after data
+	 *
+	 * NOTE: hash_start_sector in the header is kept for tooling/logging.
+	 *       For the mapping we assume a contiguous layout and use:
+	 *
+	 *           hash_start_block = data_blocks;
+	 */
+	hash_start_block = data_blocks;
+
+	pr_info("%s:   Calculated: sectors_per_block=%u, len=%llu sectors\n",
+		DM_MSG_PREFIX, sectors_per_block,
+		(unsigned long long)num_data_sectors);
+	pr_info("%s:   Data occupies blocks [0..%llu], hash starts at block %llu\n",
+		DM_MSG_PREFIX,
+		(unsigned long long)(data_blocks - 1),
+		(unsigned long long)hash_start_block);
+
+	/* root hash is 32 bytes (64 hex chars); header field is 64 bytes with padding */
 	hex_encode(h->root_hash, 32, root_hex);
-	hex_encode(h->salt, salt_size, salt_hex);
+	hex_encode(h->salt,      salt_size, salt_hex);
 
-	snprintf(dev_str, sizeof(dev_str), "%u:%u",
-		 MAJOR(data_dev), MINOR(data_dev));
-
-	snprintf(params, sizeof(params),
-		 "%u %s %s %u %u %llu %llu %s %s %s",
-		 version,
-		 dev_str, dev_str,
-		 data_bs, hash_bs,
-		 (unsigned long long)data_blocks,
-		 (unsigned long long)hash_start_block,
-		 algo,
-		 root_hex,
-		 salt_hex);
+	/*
+	 * Build the verity params string:
+	 *
+	 *   version
+	 *   <major:minor> <major:minor>
+	 *   data_bs hash_bs
+	 *   data_blocks hash_start_block
+	 *   algo root_hex salt_hex
+	 */
+	params = kasprintf(GFP_KERNEL,
+			   "%u %u:%u %u:%u %u %u %llu %llu %s %s %s",
+			   version,
+			   MAJOR(data_dev), MINOR(data_dev),
+			   MAJOR(data_dev), MINOR(data_dev),
+			   data_bs, hash_bs,
+			   (unsigned long long)data_blocks,
+			   (unsigned long long)hash_start_block,
+			   algo,
+			   root_hex,
+			   salt_hex);
+	if (!params)
+		return -ENOMEM;
 
 	pr_info("%s: dm-verity table params: \"%s\"\n", DM_MSG_PREFIX, params);
 
-	r = dm_create(0, &md);
-	if (r) {
-		pr_err("%s: dm_create() failed: %d\n", DM_MSG_PREFIX, r);
-		return r;
+	/* Fill dm_ioctl for one readonly target named "verity_root" */
+	memset(&dmi, 0, sizeof(dmi));
+	dmi.version[0]   = DM_VERSION_MAJOR;
+	dmi.version[1]   = DM_VERSION_MINOR;
+	dmi.version[2]   = DM_VERSION_PATCHLEVEL;
+	dmi.data_size    = sizeof(dmi);
+	dmi.data_start   = sizeof(dmi);
+	dmi.target_count = 1;
+	dmi.flags        = DM_READONLY_FLAG;
+	strscpy(dmi.name, "verity_root", sizeof(dmi.name));
+	dmi.name[sizeof(dmi.name) - 1] = '\0';
+	/* leave dmi.dev = 0; kernel will pick a dynamic minor (usually dm-0) */
+
+	/* Single target spec for the whole data area */
+	spec = kzalloc(sizeof(*spec), GFP_KERNEL);
+	if (!spec) {
+		kfree(params);
+		return -ENOMEM;
 	}
 
-	r = dm_table_create(&table, FMODE_READ, 1, md);
-	if (r) {
-		pr_err("%s: dm_table_create() failed: %d\n", DM_MSG_PREFIX, r);
-		dm_put(md);
-		return r;
+	spec->sector_start = 0;
+	spec->length       = (u64)num_data_sectors;
+	spec->next         = 0;
+	strscpy(spec->target_type, "verity", sizeof(spec->target_type));
+
+	spec_array[0]   = spec;
+	params_array[0] = params;
+
+	/*
+	 * This is the key: use dm_early_create(), the same internal path
+	 * that dm-mod.create= uses for early-boot mappings. It handles the
+	 * full dm_create/table/swap/resume sequence for us.
+	 */
+	ret = dm_early_create(&dmi, spec_array, params_array);
+
+	kfree(spec);
+	kfree(params);
+
+	if (ret) {
+		pr_err("%s: dm_early_create() failed: %d\n", DM_MSG_PREFIX, ret);
+		return ret;
 	}
 
-	r = dm_table_add_target(table, "verity", 0, len, params);
-	if (r) {
-		pr_err("%s: dm_table_add_target(verity) failed: %d\n",
-		       DM_MSG_PREFIX, r);
-		dm_table_destroy(table);
-		dm_put(md);
-		return r;
-	}
-
-	dm_table_set_type(table, DM_TYPE_BIO_BASED);
-
-	r = dm_table_complete(table);
-	if (r) {
-		pr_err("%s: dm_table_complete() failed: %d\n",
-		       DM_MSG_PREFIX, r);
-		dm_table_destroy(table);
-		dm_put(md);
-		return r;
-	}
-
-	old_table = dm_swap_table(md, table);
-	if (IS_ERR(old_table)) {
-		r = PTR_ERR(old_table);
-		pr_err("%s: dm_swap_table() failed: %d\n", DM_MSG_PREFIX, r);
-		dm_table_destroy(table);
-		dm_put(md);
-		return r;
-	}
-	if (old_table)
-		dm_table_destroy(old_table);
-
-	r = dm_resume(md);
-	if (r) {
-		pr_err("%s: dm_resume() failed: %d\n", DM_MSG_PREFIX, r);
-		dm_put(md);
-		return r;
-	}
-
-	{
-		struct gendisk *gd = dm_disk(md);
-		dev_t dm_dev = disk_devt(gd);
-
-		pr_info("%s: created dm-verity device: dm-%u (%u:%u), size=%llu sectors\n",
-			DM_MSG_PREFIX,
-			MINOR(dm_dev), MAJOR(dm_dev), MINOR(dm_dev),
-			(unsigned long long)len);
-		pr_info("%s: root= may use /dev/dm-%u\n",
-			DM_MSG_PREFIX, MINOR(dm_dev));
-	}
-
-	dm_put(md);
+	pr_info("%s: ✓ dm-verity mapping created: name=\"verity_root\" (likely /dev/dm-0)\n",
+		DM_MSG_PREFIX);
+	pr_info("%s: Kernel should now be able to mount root=/dev/dm-0\n",
+		DM_MSG_PREFIX);
 	return 0;
 }
+
 
 /* ----- main worker: verify & create mapping ----- */
 
@@ -633,6 +693,7 @@ static int verity_autoboot_main(void)
 		return PTR_ERR(bdev_file);
 	}
 
+	/* Peek last 4 KiB to detect attached vs detached footer layout */
 	{
 		u8 tail[VERITY_META_SIZE];
 		loff_t sz = i_size_read(file_inode(bdev_file));
@@ -650,6 +711,7 @@ static int verity_autoboot_main(void)
 			__le32 magic = *(__le32 *)tail;
 
 			if (le32_to_cpu(magic) == VERITY_META_MAGIC) {
+				/* Attached metadata footer ("VERI") */
 				struct verity_metadata_ondisk *meta;
 				const struct verity_metadata_header *h;
 
@@ -669,6 +731,9 @@ static int verity_autoboot_main(void)
 					return ret;
 				}
 
+				pr_info("%s: Attached metadata footer read and parsed successfully\n",
+					DM_MSG_PREFIX);
+
 				ret = verify_signature_pkcs7_attached(meta);
 				if (ret) {
 					kfree(meta);
@@ -682,20 +747,28 @@ static int verity_autoboot_main(void)
 					DM_MSG_PREFIX);
 
 				h = (const struct verity_metadata_header *)meta;
+
+				/*
+				 * CRITICAL: Close the underlying block device
+				 * before creating the dm-verity mapping.
+				 * dm-verity wants exclusive access.
+				 */
+				fput(bdev_file);
+				bdev_file = NULL;
+
 				ret = dm_verity_autoboot_create_mapping(dev, h);
 				if (ret) {
 					kfree(meta);
-					fput(bdev_file);
 					pr_emerg("%s: dm-verity mapping creation FAILED (attached), ret=%d\n",
 						 DM_MSG_PREFIX, ret);
 					panic("dm-verity-autoboot: failed to create dm-verity mapping");
 				}
 
 				kfree(meta);
-				fput(bdev_file);
 				return 0;
 
 			} else if (le32_to_cpu(magic) == VLOC_MAGIC) {
+				/* Detached metadata/signature indicated by VLOC footer */
 				struct verity_footer_locator loc;
 				u8 *meta_buf = NULL, *sig_buf = NULL;
 				const struct verity_metadata_header *h;
@@ -728,6 +801,9 @@ static int verity_autoboot_main(void)
 					return ret;
 				}
 
+				pr_info("%s: Detached metadata and signature regions read successfully\n",
+					DM_MSG_PREFIX);
+
 				dump_hex_short("detached.meta head", meta_buf,
 					       le32_to_cpu(loc.meta_len), 32);
 				dump_hex_short("detached.sig  head", sig_buf,
@@ -759,12 +835,22 @@ static int verity_autoboot_main(void)
 					panic("dm-verity-autoboot: invalid detached metadata header");
 				}
 
+				pr_info("%s: Detached metadata header size is valid (%u bytes)\n",
+					DM_MSG_PREFIX, le32_to_cpu(loc.meta_len));
+
 				h = (const struct verity_metadata_header *)meta_buf;
+
+				/*
+				 * CRITICAL: Close the underlying block device
+				 * before creating the dm-verity mapping.
+				 */
+				fput(bdev_file);
+				bdev_file = NULL;
+
 				ret = dm_verity_autoboot_create_mapping(dev, h);
 				if (ret) {
 					kfree(sig_buf);
 					kfree(meta_buf);
-					fput(bdev_file);
 					pr_emerg("%s: dm-verity mapping creation FAILED (detached), ret=%d\n",
 						 DM_MSG_PREFIX, ret);
 					panic("dm-verity-autoboot: failed to create dm-verity mapping");
@@ -772,7 +858,6 @@ static int verity_autoboot_main(void)
 
 				kfree(sig_buf);
 				kfree(meta_buf);
-				fput(bdev_file);
 				return 0;
 
 			} else {
@@ -792,7 +877,10 @@ static void verity_autoboot_workfn(struct work_struct *work)
 }
 static DECLARE_DELAYED_WORK(verity_work, verity_autoboot_workfn);
 
-/* init: print cmdline + param, then schedule worker */
+/*
+ * init: print cmdline + param, then schedule the verification/mapping worker
+ * a bit later so that the block device (virtio-blk, etc.) has time to appear.
+ */
 static int __init dm_verity_autoboot_init(void)
 {
 	extern char *saved_command_line;

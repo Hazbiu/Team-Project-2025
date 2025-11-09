@@ -1,4 +1,19 @@
 // Build: gcc -O2 -Wall -o bootloader bootloader.c
+//
+// Minimal userspace bootloader for the dm-verity demo.
+//
+// Responsibilities:
+//   - Resolve the absolute path to the GPT disk image (rootfs.img)
+//   - Start QEMU with:
+//       * the Linux kernel image (kernel_image.bin)
+//       * the disk image attached as a virtio-blk drive (/dev/vda in guest)
+//       * a kernel cmdline that:
+//           - tells dm-verity-autoboot which disk to verify (/dev/vda)
+//           - sets root=/dev/dm-0 so the kernel mounts the dm-verity device
+//
+// All security logic (dm-verity tree, detached PKCS7 verification,
+// dm-verity mapping creation, and mounting the verified rootfs) happens
+// entirely inside the kernel.
 
 #include <limits.h>
 #include <stdio.h>
@@ -12,17 +27,24 @@ int main(void)
     char drive_opt[PATH_MAX + 128];
     char append[1024];
 
-    if (!realpath("../build/Binaries/rootfs.img", img_abs)) {
+    // Resolve the absolute path for the disk image (GPT disk with ext4 + verity)
+    if (!realpath("../build/Binaries/rootfs.img", img_abs)) {  
         perror("realpath(rootfs.img)");
         return 1;
     }
 
-    // EXACTLY the same drive option as your working manual test,
-    // just with an absolute path substituted.
+    // QEMU -drive option: attach the image as a raw, whole disk.
+    // Inside the guest this shows up as /dev/vda.
     snprintf(drive_opt, sizeof(drive_opt),
              "if=none,id=drv0,format=raw,media=disk,file=%s",
              img_abs);
 
+    // Kernel command line:
+    //   - console/loglevel       : serial logging
+    //   - dm_verity_autoboot.*   : tell our built-in module which whole disk to verify
+    //   - root=/dev/dm-0         : root filesystem must come from the dm-verity mapping
+    //   - rootfstype=ext4        : ext4 filesystem inside the verified mapping
+    //   - rootwait/rootdelay     : wait for /dev/dm-0 to appear
     snprintf(append, sizeof(append),
              "console=ttyS0,115200 "
              "loglevel=7 "
@@ -30,25 +52,30 @@ int main(void)
              "root=/dev/dm-0 rootfstype=ext4 rootwait rootdelay=10");
 
     printf("================================================\n");
-    printf(" SIMPLE BOOTLOADER\n");
-    printf(" (Kernel does ALL the work)\n");
+    printf("  SIMPLE dm-verity BOOTLOADER (QEMU launcher)\n");
+    printf("  Kernel does all verification + mapping\n");
     printf("================================================\n\n");
 
-    printf("Using disk image: %s\n", img_abs);
-    printf("QEMU -drive: %s\n\n", drive_opt);
+    printf("Using disk image (whole GPT disk):\n  %s\n\n", img_abs);
+    printf("QEMU -drive argument:\n  %s\n\n", drive_opt);
 
     printf("This bootloader ONLY:\n");
-    printf("  - Loads kernel and disk image\n");
-    printf("  - Passes device path parameter\n\n");
+    printf("  - Loads the Linux kernel image\n");
+    printf("  - Attaches the rootfs disk as a virtio-blk drive (/dev/vda)\n");
+    printf("  - Passes the kernel command line with:\n");
+    printf("      * dm_verity_autoboot.autoboot_device=/dev/vda\n");
+    printf("      * root=/dev/dm-0 (ext4, verified)\n\n");
 
-    printf("The kernel module will:\n");
-    printf("  1. Wait for /dev/vda to appear\n");
-    printf("  2. Read metadata from end of disk\n");
-    printf("  3. Verify PKCS7 signature\n");
-    printf("  4. Create /dev/dm-0 device\n");
-    printf("  5. Kernel mounts /dev/dm-0 as root\n\n");
+    printf("Inside the guest, the kernel + dm-verity-autoboot will:\n");
+    printf("  1. Bring up virtio-blk and expose /dev/vda (whole disk)\n");
+    printf("  2. Read the dm-verity locator + metadata + PKCS7 signature\n");
+    printf("     from the end of /dev/vda\n");
+    printf("  3. Verify the PKCS7 signature against the kernel trusted keyring\n");
+    printf("  4. Create a read-only dm-verity mapping over /dev/vda\n");
+    printf("     (device name \"verity_root\", typically /dev/dm-0)\n");
+    printf("  5. Let the kernel mount /dev/dm-0 as the ext4 root filesystem\n\n");
 
-    printf("Press ENTER to boot...\n");
+    printf("Press ENTER to boot QEMU...\n");
     getchar();
 
     const char *argv[] = {
@@ -63,10 +90,11 @@ int main(void)
 
         "-kernel", "kernel_image.bin",
 
-        // ONE argument to -drive, exactly like your working manual command
+        // Attach the whole disk image as a virtio-blk device (/dev/vda in guest)
         "-drive",  drive_opt,
         "-device", "virtio-blk-pci,drive=drv0",
 
+        // Pass the kernel command line constructed above
         "-append", append,
         NULL
     };

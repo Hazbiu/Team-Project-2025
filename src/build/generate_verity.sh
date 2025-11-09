@@ -2,7 +2,8 @@
 set -euo pipefail
 
 echo "========================================"
-echo "  Generating dm-verity metadata (DETACHED signature mode, WHOLE DISK)"
+echo "  Generating dm-verity metadata"
+echo "  (DETACHED PKCS7, NO superblock, WHOLE DISK)"
 echo "========================================"
 
 BUILD_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -12,14 +13,14 @@ ROOTFS_IMG="$BIN_DIR/rootfs.img"
 ROOT_HASH_FILE="$META_DIR/root.hash"
 
 # Detached signature artifacts
-METADATA_HEADER="$META_DIR/verity_header.bin"      # 196-byte signed header (input to signature)
+METADATA_HEADER="$META_DIR/verity_header.bin"      # 196-byte signed header (input to PKCS7)
 SIG_FILE="$META_DIR/verity_header.sig"             # Detached PKCS7 signature (DER)
-LOCATOR_FILE="$META_DIR/verity_locator.bin"        # 4KB locator footer
+LOCATOR_FILE="$META_DIR/verity_locator.bin"        # 4KB locator footer ("VLOC")
 
-# Metadata header length (same as VERITY_FOOTER_SIGNED_LEN in kernel)
+# Metadata header length (must match VERITY_FOOTER_SIGNED_LEN in kernel module)
 META_LEN=196
 
-# Signing key + cert
+# Signing key + cert (trusted by kernel keyring)
 PRIV_KEY="$BUILD_DIR/../boot/bl_private.pem"
 CERT_FILE="$BUILD_DIR/../boot/bl_cert.pem"
 
@@ -96,7 +97,7 @@ if (( AVAILABLE_SPACE < HASH_BYTES )); then
   echo "  resize2fs $DISK_DEV $TARGET_BLOCKS"
   sudo resize2fs "$DISK_DEV" "$TARGET_BLOCKS"
 
-  # Recompute after shrink
+  # Recompute after shrink (we want data_blocks to match the ext4 data area)
   BLOCK_COUNT=$TARGET_BLOCKS
   DATA_SIZE=$((BLOCK_COUNT * BLOCK_SIZE))
   HASH_OFFSET=$DATA_SIZE
@@ -135,7 +136,7 @@ import struct, binascii
 MAGIC = 0x56455249  # "VERI"
 VERSION = 1
 DATA_BLOCKS = ${BLOCK_COUNT}
-HASH_START_SECTOR = ${HASH_OFFSET_SECTORS}   # sectors, relative to the whole disk
+HASH_START_SECTOR = ${HASH_OFFSET_SECTORS}   # absolute sectors on this disk (for logging / tooling)
 DATA_BLOCK_SIZE = ${BLOCK_SIZE}
 HASH_BLOCK_SIZE = ${BLOCK_SIZE}
 HASH_ALGORITHM = b"sha256"
@@ -223,7 +224,8 @@ sudo chown -R "$USER:$USER" "$META_DIR"
 
 echo
 echo "========================================"
-echo "  dm-verity generation complete (DETACHED, NO superblock, WHOLE DISK)"
+echo "  dm-verity generation complete"
+echo "  (DETACHED, NO superblock, WHOLE DISK)"
 echo "========================================"
 echo "Artifacts in $META_DIR:"
 echo "  • verity_info.txt        (dm-verity format output)"
@@ -237,6 +239,9 @@ echo "  [...ext4 data...][hash tree @ $HASH_OFFSET][metadata@$META_OFFSET][sig@$
 echo
 echo "Boot flow (no initramfs):"
 echo "  - Bootloader passes disk path: dm_verity_autoboot.autoboot_device=/dev/vda"
-echo "  - Kernel module opens /dev/vda, reads locator+metadata+sig at end of DISK"
-echo "  - Kernel verifies PKCS7 and dm-verity parameters"
-echo "  - Separate mechanism (dm-init or module) creates /dev/dm-0 and kernel mounts it"
+echo "  - dm-verity-autoboot kernel module opens /dev/vda"
+echo "  - Module reads VLOC, then metadata+signature regions at end of DISK"
+echo "  - Module verifies PKCS7 against the 196-byte header using kernel trusted keyring"
+echo "  - Module creates dm-verity mapping \"verity_root\" via dm_early_create()"
+echo "  - /dev/dm-0 (verity_root) is mounted as the ext4 root filesystem (root=/dev/dm-0)"
+echo "========================================"

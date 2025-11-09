@@ -76,7 +76,7 @@ echo "  Estimated filesystem data size: ${ROOTFS_SIZE_MB} MB"
 # Add extra space for:
 #  - slack
 #  - future growth
-#  - dm-verity hash tree + metadata (your verity script will shrink FS again if needed)
+#  - dm-verity hash tree + metadata (the verity script will shrink the FS again if needed)
 VERITY_SPACE_MB=$((ROOTFS_SIZE_MB / 5 + 20))    # ~20% + 20 MB
 DISK_SIZE_MB=$((ROOTFS_SIZE_MB + VERITY_SPACE_MB))
 
@@ -113,9 +113,9 @@ echo "Output: $OUTPUT_IMG"
 echo
 echo "Structure:"
 echo "  - Single block device (no GPT, no partitions)"
-echo "  - ext4 filesystem spanning the whole image"
-echo "  - Extra free space at the end for:"
-echo "      dm-verity hash tree + metadata + locator"
+echo "  - ext4 filesystem spanning (most of) the whole image"
+echo "  - Extra free space at the end reserved for:"
+echo "      dm-verity hash tree + metadata header + detached signature + VLOC footer"
 echo
 echo "Next step: Run the dm-verity metadata generation script"
 echo "  (the one that works on the WHOLE disk and writes VLOC at the end)."
