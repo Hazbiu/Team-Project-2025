@@ -1,95 +1,96 @@
-// Build: gcc -O2 -Wall -Wextra -o simple_bootloader simple_bootloader.c
+// Build: gcc -O2 -Wall -o bootloader bootloader.c
 
-#define _GNU_SOURCE
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <sys/wait.h>
 #include <unistd.h>
-
-/*
- * Simplified bootloader — only passes the rootfs partition path to the kernel.
- *
- * The kernel module (dm-verity-autoboot-full) will:
- *  1) Read dm-verity metadata from the given partition
- *  2) Verify the detached PKCS7 signature
- *  3) Create the dm-verity mapping in-kernel (no userspace)
- *  4) Let the kernel mount the verified root
- */
-
-static const char *KERNEL_IMG = "kernel_image.bin";
-static const char *ROOTFS_IMG = "../build/Binaries/rootfs.img";
-
-static int boot_qemu(const char *kernel, const char *rootfs_img)
-{
-    char append[1024];
-
-    /*
-     * Kernel command line:
-     *  - Pass the exact partition that contains ext4 + hashtree + detached footer
-     *  - root=/dev/mapper/verity_root (created in-kernel by our module)
-     *  - Keep rootwait to let the block device probe complete
-     */
-    snprintf(append, sizeof(append),
-        "console=ttyS0,115200 "
-        "loglevel=7 "
-        "dm_verity_autoboot.autoboot_device=/dev/vda1 "
-        "root=/dev/dm-0 "
-        "rootfstype=ext4 "
-        "rootwait");
-
-    printf("=== Kernel command line ===\n%s\n\n", append);
-
-    char drive[256];
-    snprintf(drive, sizeof(drive), "file=%s,format=raw,if=virtio", rootfs_img);
-
-    const char *argv[] = {
-        "qemu-system-x86_64",
-        "-m", "1024",
-        "-kernel", kernel,
-        "-drive", drive,
-        "-append", append,
-        "-nographic",
-        NULL
-    };
-
-    pid_t pid = fork();
-    if (pid == 0) {
-        execvp(argv[0], (char * const *)argv);
-        _exit(127);
-    }
-
-    int st;
-    waitpid(pid, &st, 0);
-    return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
-}
+#include <sys/wait.h>
 
 int main(void)
 {
-    printf("=====================================\n");
-    printf("   Simple Bootloader\n");
-    printf("   (Kernel handles verity & mount)\n");
-    printf("=====================================\n\n");
+    char img_abs[PATH_MAX];
+    char drive_opt[PATH_MAX + 128];
+    char append[1024];
 
-    printf("This bootloader only:\n");
-    printf("  1. Loads kernel and rootfs image\n");
-    printf("  2. Passes the partition path via kernel parameter\n\n");
+    if (!realpath("../build/Binaries/rootfs.img", img_abs)) {
+        perror("realpath(rootfs.img)");
+        return 1;
+    }
+
+    // EXACTLY the same drive option as your working manual test,
+    // just with an absolute path substituted.
+    snprintf(drive_opt, sizeof(drive_opt),
+             "if=none,id=drv0,format=raw,media=disk,file=%s",
+             img_abs);
+
+    snprintf(append, sizeof(append),
+             "console=ttyS0,115200 "
+             "loglevel=7 "
+             "dm_verity_autoboot.autoboot_device=/dev/vda "
+             "root=/dev/dm-0 rootfstype=ext4 rootwait rootdelay=10");
+
+    printf("================================================\n");
+    printf(" SIMPLE BOOTLOADER\n");
+    printf(" (Kernel does ALL the work)\n");
+    printf("================================================\n\n");
+
+    printf("Using disk image: %s\n", img_abs);
+    printf("QEMU -drive: %s\n\n", drive_opt);
+
+    printf("This bootloader ONLY:\n");
+    printf("  - Loads kernel and disk image\n");
+    printf("  - Passes device path parameter\n\n");
 
     printf("The kernel module will:\n");
-    printf("  1. Read dm-verity metadata from /dev/vda1\n");
-    printf("  2. Verify PKCS7 signature\n");
-    printf("  3. Parse metadata (root hash, salt, etc.)\n");
-    printf("  4. Create dm-verity device mapping (in-kernel)\n");
-    printf("  5. Allow kernel to mount verified root\n\n");
+    printf("  1. Wait for /dev/vda1 to appear\n");
+    printf("  2. Read metadata from end of disk\n");
+    printf("  3. Verify PKCS7 signature\n");
+    printf("  4. Create /dev/dm-0 device\n");
+    printf("  5. Kernel mounts /dev/dm-0 as root\n\n");
 
     printf("Press ENTER to boot...\n");
     getchar();
 
-    printf("\n=== Launching QEMU ===\n");
-    printf("Kernel: %s\n", KERNEL_IMG);
-    printf("Rootfs: %s (as /dev/vda with partition p1)\n\n", ROOTFS_IMG);
+    const char *argv[] = {
+        "qemu-system-x86_64",
+        "-m", "1024",
+        "-machine", "q35,accel=tcg",
+        "-cpu", "max",
+        "-nodefaults",
+        "-nographic",
+        "-serial", "mon:stdio",
+        "-d", "guest_errors",
 
-    int rc = boot_qemu(KERNEL_IMG, ROOTFS_IMG);
-    printf("QEMU exited with code %d\n", rc);
-    return rc;
+        "-kernel", "kernel_image.bin",
+
+        // ONE argument to -drive, exactly like your working manual command
+        "-drive",  drive_opt,
+        "-device", "virtio-blk-pci,drive=drv0",
+
+        "-append", append,
+        NULL
+    };
+
+    printf("\n=== Launching QEMU ===\n");
+    printf("Kernel cmdline:\n  %s\n\n", append);
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        execvp(argv[0], (char * const *)argv);
+        perror("execvp(qemu-system-x86_64)");
+        _exit(1);
+    }
+
+    int status;
+    if (waitpid(pid, &status, 0) < 0) {
+        perror("waitpid");
+        return 1;
+    }
+
+    if (WIFEXITED(status))
+        printf("\nQEMU exited with status: %d\n", WEXITSTATUS(status));
+    else
+        printf("\nQEMU exited abnormally (status=0x%x)\n", status);
+
+    return 0;
 }
