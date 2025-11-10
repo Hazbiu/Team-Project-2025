@@ -1,77 +1,62 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Minimal dm-verity corrupter (1-byte flip) + auto-relink.
+# Minimal dm-verity corrupter (1-byte flip) for your whole-disk rootfs image.
+#
+# This operates on the same rootfs.img that the bootloader passes to QEMU:
+#   - bootloader realpaths ../build/Binaries/rootfs.img (from ../bootloaders)
+#   - this script defaults to ./Binaries/rootfs.img when run from src/build
+#
 # Usage:
-#   ./corrupt_rootfs.sh <meta1|sig1> [img-or-link] [--inplace] [--no-link] [--link-good]
-#   ./corrupt_rootfs.sh --link-good
+#   ./corrupt_rootfs.sh <meta1|sig1> [image-path] [--inplace]
 #
 # Modes:
 #   meta1 : flip 1 byte in 196-byte VERI header (at meta_off + 64)
 #   sig1  : flip 1 byte in detached PKCS#7 signature (at sig_off)
 #
 # Defaults:
-#   img-or-link = ../bootloaders/rootfs.img (resolved to real target)
+#   image-path = Binaries/rootfs.img (same image your bootloader uses)
+#   --inplace  : overwrite that file in place (so bootloader sees corruption)
+#   (without --inplace a copy *.bad.img is created instead)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMG_LINK_DEFAULT="$SCRIPT_DIR/../bootloaders/rootfs.img"
+IMG_DEFAULT="$SCRIPT_DIR/Binaries/rootfs.img"
 
-# Defaults
 MODE=""
-IMG_LINK="$IMG_LINK_DEFAULT"
+IMG_PATH="$IMG_DEFAULT"
 INPLACE=0
-LINK=1
-LINK_GOOD=0
 
-# Parse args (flags can come first)
+# Parse args
 args=()
 for a in "$@"; do
   case "$a" in
-    --inplace)   INPLACE=1 ;;
-    --no-link)   LINK=0 ;;
-    --link-good) LINK_GOOD=1 ;;
-    meta1|sig1)  MODE="$a" ;;
-    *)           args+=("$a") ;;
+    --inplace) INPLACE=1 ;;
+    meta1|sig1) MODE="$a" ;;
+    *) args+=("$a") ;;
   esac
 done
 
-# If user passed a custom image/link path, take the first non-flag leftover
+# Optional explicit image path (first non-flag arg that is not the mode)
 if ((${#args[@]} > 0)); then
-  IMG_LINK="${args[0]}"
+  IMG_PATH="${args[0]}"
 fi
 
-# Helper: atomic relink of src/bootloaders/rootfs.img
-relink() {
-  local target="$1"
-  local link="$SCRIPT_DIR/../bootloaders/rootfs.img"
-  local abs tmp
-  abs="$(readlink -f -- "$target")"
-  [[ -f "$abs" ]] || { echo "ERROR: not a file: $abs"; exit 1; }
-  tmp="${link}.tmp.$$"
-  ln -s -- "$abs" "$tmp"
-  mv -Tf -- "$tmp" "$link"
-  echo "Symlink updated: $link -> $(readlink -f "$link")"
-}
-
-# Handle --link-good early (no mode required)
-if (( LINK_GOOD )); then
-  relink "$SCRIPT_DIR/../build/Binaries/rootfs.img"
-  exit 0
-fi
-
-# Require a mode now
+# Require a mode
 if [[ -z "${MODE:-}" ]]; then
-  echo "Usage: $0 <meta1|sig1> [img-or-link] [--inplace] [--no-link] [--link-good]" >&2
+  echo "Usage: $0 <meta1|sig1> [image-path] [--inplace]" >&2
+  echo "  meta1 : flip 1 byte in VERI header" >&2
+  echo "  sig1  : flip 1 byte in detached PKCS7 signature" >&2
   exit 2
 fi
 
-# Resolve input
-IMG="$(readlink -f -- "$IMG_LINK")"
+# Resolve and validate image path
+IMG="$(readlink -f -- "$IMG_PATH")"
 [[ -f "$IMG" ]] || { echo "ERROR: image not found: $IMG"; exit 1; }
 
 # Output image (copy or in-place)
 if (( INPLACE )); then
   BAD_IMG="$IMG"
+  echo "==> IN-PLACE corruption requested"
 else
   BAD_IMG="${IMG%.img}.bad.img"
   echo "==> Copying pristine image..."
@@ -79,12 +64,12 @@ else
 fi
 
 echo "==> Mode  : $MODE"
-echo "==> Input : $IMG (from link $IMG_LINK)"
+echo "==> Input : $IMG"
 echo "==> Output: $BAD_IMG"
 
-# Attach loop (whole disk, with partitions)
+# Attach loop (whole disk, no partitions)
 echo "==> Attaching loop…"
-LOOP="$(sudo losetup -fP --show -- "$BAD_IMG")"
+LOOP="$(sudo losetup -f --show -- "$BAD_IMG")"
 trap 'sudo losetup -d "$LOOP" >/dev/null 2>&1 || true' EXIT
 sleep 1
 
@@ -157,15 +142,12 @@ trap - EXIT
 
 echo " Done → $BAD_IMG"
 case "$MODE" in
-  meta1) echo "Expected: dm table likely fails → early VFS panic (header altered).";;
-  sig1)  echo "Expected: dm table loads; your module rejects PKCS7 and panics with your message.";;
+  meta1)
+    echo "Expected: dm-verity metadata header changed → dm table or verification should fail early."
+    ;;
+  sig1)
+    echo "Expected: dm-verity parameters still parse, but PKCS7 verification fails in your module."
+    ;;
 esac
-
-# Repoint bootloader symlink unless disabled
-if (( LINK )); then
-  relink "$BAD_IMG"
-else
-  echo "(symlink not updated: --no-link set)"
-fi
 
 # End
