@@ -35,7 +35,7 @@ CONFIG_SYSTEM_TRUSTED_KEYS="bl_cert.pem"
 
 ---
 
-## Metadata Generation (generate_verity_metadata.sh)
+## 3️⃣ Metadata Generation (generate_verity_metadata.sh)
 
 ### Purpose
 Compute dm‑verity metadata, generate a **PKCS#7 (DER, attached)** signature, and embed it directly at the **end of the disk**.

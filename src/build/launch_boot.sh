@@ -16,7 +16,7 @@ BUILD_DIR="$(cd "$(dirname "$0")" && pwd)"
 BOOTLOADER_DIR="$BUILD_DIR/../bootloaders"
 ROOTFS_IMG="$BUILD_DIR/Binaries/rootfs.img"
 
-# Build rootfs (build_rootfs.sh)
+# [1] Build rootfs
 echo -e "${YELLOW}[1/3] Building Root Filesystem...${RESET}"
 if bash "$BUILD_DIR/build_rootfs.sh"; then
     echo -e "${GREEN}✔ Root filesystem built successfully${RESET}"
@@ -25,7 +25,7 @@ else
     exit 1
 fi
 
-# Generate dm-verity data (generate_verity.sh)
+# [2] Generate dm-verity metadata
 echo -e "${YELLOW}[2/3] Generating dm-verity metadata...${RESET}"
 if bash "$BUILD_DIR/generate_verity.sh"; then
     echo -e "${GREEN}✔ dm-verity metadata generated successfully${RESET}"
@@ -34,19 +34,20 @@ else
     exit 1
 fi
 
-#  Verifies rootfs image exists 
+# Verify rootfs image exists
 if [[ ! -f "$ROOTFS_IMG" ]]; then
     echo -e "${RED}✖ rootfs.img not found at $ROOTFS_IMG${RESET}"
     exit 1
 fi
 
-# Copy image to bootloader directory
-cp -f "$ROOTFS_IMG" "$BOOTLOADER_DIR/"
+echo -e "${YELLOW}rootfs.img ready at:${RESET} $ROOTFS_IMG"
+echo -e "${YELLOW}Bootloader will use this image directly (no copy).${RESET}"
 
-# Bootloader launcher
+# [3] Launch bootloader
 echo -e "${YELLOW}[3/3] Launching bootloader...${RESET}"
 cd "$BOOTLOADER_DIR"
 
+# adjust name if your binary is different (bootloader vs secondary_bootloader)
 if sudo ./secondary_bootloader; then
     echo -e "${GREEN}✔ Bootloader executed successfully${RESET}"
 else
