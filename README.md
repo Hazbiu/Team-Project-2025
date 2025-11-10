@@ -57,7 +57,6 @@ It shows how to:
 
 ## 2. Repository Layout (Assumed)
 
-The scripts and code you pasted expect something like:
 
 ```text
 repo/
