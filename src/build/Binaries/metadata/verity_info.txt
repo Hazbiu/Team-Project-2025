@@ -1,10 +1,10 @@
-VERITY header information for /dev/loop16p1
+VERITY header information for /dev/loop17
 UUID:            	
 Hash type:       	1
-Data blocks:     	107520
+Data blocks:     	132830
 Data block size: 	4096
-Hash blocks:     	848
+Hash blocks:     	1048
 Hash block size: 	4096
 Hash algorithm:  	sha256
-Salt:            	57b7b9b2409ac36bcba2e90d8cc34690d412192c59ee86095a12aba16ee75b1c
-Root hash:      	a81c2344bc27d158f60863fc1dbd6c6ce0c8531b7c7f019db250b28598d76081
+Salt:            	cf7e0de9be7a56bf5447368c6b818cc3f8b10b139518bf5c9273a8a91088be9d
+Root hash:      	7d4c9cf72f92ba78ef861c9bcfe89c5224e3748840b2fe5a1301179d090ab96a
