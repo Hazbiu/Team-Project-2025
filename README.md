@@ -335,22 +335,17 @@ cd build/
 # (should boot successfully)
 
 # 2. Create corrupted copy
-./corrupt_rootfs.sh meta1
+./corrupt_rootfs.sh meta1 --inplace
 # This creates rootfs.bad.img
 
-# 3. Test with corrupted image
-# (manually edit bootloader.c to use rootfs.bad.img, or)
-mv Binaries/rootfs.img Binaries/rootfs.clean.img
-mv Binaries/rootfs.bad.img Binaries/rootfs.img
-
-# 4. Attempt boot (should fail)
+# 3. Attempt boot (should fail)
 cd ../bootloaders/
 sudo ./secondary_bootloader
 # Expected: Kernel panic due to signature verification failure
 
 # 5. Restore clean image
-cd ../build/Binaries/
-mv rootfs.clean.img rootfs.img
+cd build/
+./launch_boot.sh
 ```
 
 ### Verification
@@ -377,22 +372,6 @@ During boot, monitor the serial console for verification messages:
 - Kernel panic message
 
 ## Configuration
-
-### Customizing Root Filesystem
-
-Edit `build_rootfs.sh` to modify:
-- Base distribution (change `debootstrap` source)
-- Installed packages (add to `--include=` list)
-- User accounts and passwords
-- Network configuration
-- Hostname
-
-**Example: Add additional packages:**
-```bash
-# In build_rootfs.sh, modify:
---include=systemd,systemd-sysv,udev,passwd,login,sudo,net-tools,iproute2,\
-ifupdown,openssh-server,vim,less,curl,wget,python3
-```
 
 ### Adjusting Disk Size
 
@@ -431,18 +410,6 @@ Edit `bootloader.c` QEMU arguments:
 - For production: Use hardware security modules (HSM) for key storage
 - Consider key rotation policy (recommended: annually)
 
-**Production Key Management:**
-```bash
-# Store private key with restricted permissions
-chmod 600 boot/bl_private.pem
-chown root:root boot/bl_private.pem
-
-# Consider using encrypted storage
-cryptsetup luksFormat /dev/sdX
-cryptsetup luksOpen /dev/sdX secure_keys
-mount /dev/mapper/secure_keys /secure/keys
-mv boot/bl_private.pem /secure/keys/
-```
 
 ### Threat Model
 
@@ -454,13 +421,6 @@ mv boot/bl_private.pem /secure/keys/
 - Hash tree corruption
 - Metadata manipulation
 
-**Not Protected Against:**
-- Compromised signing key
-- Physical attacks on hardware (cold boot, DMA)
-- Attacks before dm-verity activation
-- Runtime memory attacks (consider SELinux/AppArmor)
-- Supply chain attacks on build tools
-- Side-channel attacks
 
 ## Appendix A: File Format Specifications
 
