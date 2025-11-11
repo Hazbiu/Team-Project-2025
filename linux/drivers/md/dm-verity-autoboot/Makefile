@@ -1,1 +1,2 @@
-obj-$(CONFIG_DM_VERITY_AUTOBOOT) += dm-verity-autoboot.o
+
+obj-y += dm-verity-autoboot.o signature_verify.o

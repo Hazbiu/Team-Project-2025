@@ -46,6 +46,8 @@
 #include <crypto/hash_info.h>
 #include <linux/device-mapper.h>
 #include <linux/dm-ioctl.h>
+#include "signature_verify.h"
+
 
 #define DM_MSG_PREFIX              "verity-autoboot"
 
@@ -313,166 +315,9 @@ static int read_metadata_footer_attached(struct file *f,
 	return 0;
 }
 
-/* ---- PKCS7 verification (ATTACHED) ---- */
 
-static int verify_signature_pkcs7_attached(const struct verity_metadata_ondisk *meta)
-{
-	u8 digest[32];
-	const u8 *signed_hash;
-	u32 signed_hash_len;
-	enum hash_algo signed_hash_algo;
-	u32 blob_sz;
-	int ret;
-	struct pkcs7_message *pkcs7;
 
-	pr_info("%s: Verifying PKCS7 signature (attached)\n", DM_MSG_PREFIX);
 
-	blob_sz = le32_to_cpu(meta->pkcs7_size);
-	pr_info("%s:   pkcs7_size = %u bytes\n", DM_MSG_PREFIX, blob_sz);
-
-	if (!blob_sz || blob_sz > VERITY_PKCS7_MAX) {
-		pr_err("%s: invalid pkcs7_size %u (max %u)\n",
-		       DM_MSG_PREFIX, blob_sz, VERITY_PKCS7_MAX);
-		return -EINVAL;
-	}
-
-	dump_hex_short("pkcs7_blob[0..]", meta->pkcs7_blob, blob_sz, 32);
-
-	ret = compute_footer_digest(meta, digest);
-	if (ret) {
-		pr_err("%s: compute_footer_digest() failed: %d\n",
-		       DM_MSG_PREFIX, ret);
-		return ret;
-	}
-	dump_hex_short("computed_digest(SHA256[0..195])", digest, 32, 32);
-
-	pkcs7 = pkcs7_parse_message(meta->pkcs7_blob, blob_sz);
-	if (IS_ERR(pkcs7)) {
-		pr_err("%s: pkcs7_parse_message() failed: %ld\n",
-		       DM_MSG_PREFIX, PTR_ERR(pkcs7));
-		return PTR_ERR(pkcs7);
-	}
-
-	ret = pkcs7_verify(pkcs7, VERIFYING_MODULE_SIGNATURE);
-	if (ret) {
-		pr_err("%s: pkcs7_verify(): signer NOT trusted (%d)\n",
-		       DM_MSG_PREFIX, ret);
-		goto out_free;
-	}
-	pr_info("%s: signer accepted by kernel trusted keyring\n",
-		DM_MSG_PREFIX);
-
-	ret = pkcs7_get_digest(pkcs7, &signed_hash, &signed_hash_len, &signed_hash_algo);
-	if (ret) {
-		pr_err("%s: pkcs7_get_digest(): %d\n", DM_MSG_PREFIX, ret);
-		goto out_free;
-	}
-
-	pr_info("%s:   digest algo = %d, len = %u\n",
-		DM_MSG_PREFIX, signed_hash_algo, signed_hash_len);
-	dump_hex_short("pkcs7.signed_hash", signed_hash, signed_hash_len, 32);
-
-	if (signed_hash_algo != HASH_ALGO_SHA256 || signed_hash_len != 32) {
-		pr_err("%s: digest algo/len not SHA256/32\n", DM_MSG_PREFIX);
-		ret = -EKEYREJECTED;
-		goto out_free;
-	}
-	if (memcmp(signed_hash, digest, 32) != 0) {
-		pr_err("%s: digest mismatch between PKCS7 and footer[0..195]\n",
-		       DM_MSG_PREFIX);
-		ret = -EKEYREJECTED;
-		goto out_free;
-	}
-
-	pr_info("%s: Digest in PKCS7 matches header digest; footer is authentic\n",
-		DM_MSG_PREFIX);
-	ret = 0;
-
-out_free:
-	pkcs7_free_message(pkcs7);
-	return ret;
-}
-
-/* ---- PKCS7 verification (DETACHED) ---- */
-
-static int verify_signature_pkcs7_detached(const u8 *meta_buf, u32 meta_len,
-					   const u8 *sig_buf,  u32 sig_len)
-{
-	struct pkcs7_message *pkcs7;
-	const u8 *signed_hash;
-	u32 signed_hash_len;
-	enum hash_algo signed_hash_algo;
-	u8 digest[32];
-	int ret;
-
-	pr_info("%s: Verifying PKCS7 signature (detached)\n", DM_MSG_PREFIX);
-	pr_info("%s:   meta_len = %u, sig_len = %u\n",
-		DM_MSG_PREFIX, meta_len, sig_len);
-	dump_hex_short("detached.pkcs7 head", sig_buf, sig_len, 32);
-
-	if (!meta_len || meta_len < VERITY_FOOTER_SIGNED_LEN ||
-	    sig_len == 0 || sig_len > VERITY_PKCS7_MAX)
-		return -EINVAL;
-
-	ret = sha256_buf(meta_buf, meta_len, digest);
-	if (ret) {
-		pr_err("%s: sha256(meta_buf) failed: %d\n", DM_MSG_PREFIX, ret);
-		return ret;
-	}
-	dump_hex_short("computed_digest(SHA256[meta_buf])", digest, 32, 32);
-
-	pkcs7 = pkcs7_parse_message(sig_buf, sig_len);
-	if (IS_ERR(pkcs7)) {
-		pr_err("%s: pkcs7_parse_message(): %ld\n",
-		       DM_MSG_PREFIX, PTR_ERR(pkcs7));
-		return PTR_ERR(pkcs7);
-	}
-
-	ret = pkcs7_supply_detached_data(pkcs7, meta_buf, meta_len);
-	if (ret) {
-		pr_err("%s: pkcs7_supply_detached_data(): %d\n",
-		       DM_MSG_PREFIX, ret);
-		goto out_free;
-	}
-
-	ret = pkcs7_verify(pkcs7, VERIFYING_MODULE_SIGNATURE);
-	if (ret) {
-		pr_err("%s: pkcs7_verify(): signer NOT trusted (%d)\n",
-		       DM_MSG_PREFIX, ret);
-		goto out_free;
-	}
-
-	ret = pkcs7_get_digest(pkcs7, &signed_hash, &signed_hash_len, &signed_hash_algo);
-	if (ret) {
-		pr_err("%s: pkcs7_get_digest(): %d\n", DM_MSG_PREFIX, ret);
-		goto out_free;
-	}
-
-	pr_info("%s:   digest algo = %d, len = %u\n",
-		DM_MSG_PREFIX, signed_hash_algo, signed_hash_len);
-	dump_hex_short("pkcs7.signed_hash", signed_hash, signed_hash_len, 32);
-
-	if (signed_hash_algo != HASH_ALGO_SHA256 || signed_hash_len != 32) {
-		pr_err("%s: digest algo/len not SHA256/32\n",
-		       DM_MSG_PREFIX);
-		ret = -EKEYREJECTED;
-		goto out_free;
-	}
-	if (memcmp(signed_hash, digest, 32) != 0) {
-		pr_err("%s: digest mismatch between PKCS7 and detached metadata\n",
-		       DM_MSG_PREFIX);
-		ret = -EKEYREJECTED;
-		goto out_free;
-	}
-
-	pr_info("%s: Digest in PKCS7 matches detached metadata digest\n",
-		DM_MSG_PREFIX);
-	ret = 0;
-
-out_free:
-	pkcs7_free_message(pkcs7);
-	return ret;
-}
 
 /* ---- Create dm-verity mapping after successful verification ---- */
 /*
