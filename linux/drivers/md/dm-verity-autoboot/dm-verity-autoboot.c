@@ -47,6 +47,8 @@
 #include <linux/device-mapper.h>
 #include <linux/dm-ioctl.h>
 #include "signature_verify.h"
+#include "metadata_parse.h"
+
 
 
 #define DM_MSG_PREFIX              "verity-autoboot"
@@ -588,10 +590,20 @@ static int verity_autoboot_main(void)
 					panic("dm-verity-autoboot: untrusted rootfs footer");
 				}
 
-				pr_info("%s: Signature verification PASSED (attached)\n",
-					DM_MSG_PREFIX);
+				pr_info("%s: Signature verification PASSED (attached)\n", DM_MSG_PREFIX);
 
 				h = (const struct verity_metadata_header *)meta;
+
+				/* NEW: Validate + log metadata fields using separated logic */
+				ret = verity_parse_metadata_header(h);
+				if (ret) {
+					kfree(meta);
+					fput(bdev_file);
+					pr_emerg("%s: metadata header validation FAILED, ret=%d\n",
+							DM_MSG_PREFIX, ret);
+					panic("dm-verity-autoboot: invalid metadata header");
+				}
+
 
 				/*
 				 * CRITICAL: Close the underlying block device
@@ -667,23 +679,20 @@ static int verity_autoboot_main(void)
 					panic("dm-verity-autoboot: untrusted detached metadata");
 				}
 
-				pr_info("%s: Signature verification PASSED (detached)\n",
-					DM_MSG_PREFIX);
+				pr_info("%s: Signature verification PASSED (detached)\n", DM_MSG_PREFIX);
 
-				if (le32_to_cpu(loc.meta_len) < sizeof(struct verity_metadata_header)) {
-					pr_emerg("%s: detached metadata too small (%u)\n",
-						 DM_MSG_PREFIX,
-						 le32_to_cpu(loc.meta_len));
+				h = (const struct verity_metadata_header *)meta_buf;
+
+				/* NEW: Validate + log metadata fields */
+				ret = verity_parse_metadata_header(h);
+				if (ret) {
 					kfree(sig_buf);
 					kfree(meta_buf);
 					fput(bdev_file);
+					pr_emerg("%s: metadata header validation FAILED (detached), ret=%d\n",
+							DM_MSG_PREFIX, ret);
 					panic("dm-verity-autoboot: invalid detached metadata header");
 				}
-
-				pr_info("%s: Detached metadata header size is valid (%u bytes)\n",
-					DM_MSG_PREFIX, le32_to_cpu(loc.meta_len));
-
-				h = (const struct verity_metadata_header *)meta_buf;
 
 				/*
 				 * CRITICAL: Close the underlying block device
