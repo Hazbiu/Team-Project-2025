@@ -1,0 +1,1 @@
+obj-$(CONFIG_DM_VERITY_AUTOBOOT) += dm-verity-autoboot.o
