@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Colors for readability
+
 GREEN="\033[0;32m"
 RED="\033[0;31m"
 YELLOW="\033[1;33m"
@@ -43,15 +43,14 @@ fi
 echo -e "${YELLOW}rootfs.img ready at:${RESET} $ROOTFS_IMG"
 echo -e "${YELLOW}Bootloader will use this image directly (no copy).${RESET}"
 
-# [3] Launch bootloader
-echo -e "${YELLOW}[3/3] Launching bootloader...${RESET}"
+# [3] Launch QEMU
+echo -e "${YELLOW}[3/3] Launching QEMU...${RESET}"
 cd "$BOOTLOADER_DIR"
 
-# adjust name if your binary is different (bootloader vs secondary_bootloader)
-if sudo ./secondary_bootloader; then
-    echo -e "${GREEN}✔ Bootloader executed successfully${RESET}"
+if sudo ./qemu_main.sh; then
+    echo -e "${GREEN}✔ QEMU environment launched successfully${RESET}"
 else
-    echo -e "${RED}✖ Bootloader failed to execute${RESET}"
+    echo -e "${RED}✖ QEMU failed to launch${RESET}"
     exit 1
 fi
 

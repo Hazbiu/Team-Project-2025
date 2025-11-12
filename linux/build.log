@@ -1,123 +1,171 @@
   DESCEND objtool
-  DESCEND bpf/resolve_btfids
-  INSTALL libsubcmd_headers
   INSTALL libsubcmd_headers
   CALL    scripts/checksyscalls.sh
-  CC [M]  drivers/isdn/hardware/mISDN/hfcpci.o
-  CC      drivers/md/dm-verity-autoboot.o
+  CC      drivers/md/dm-verity-autoboot/metadata_parse.o
+drivers/md/dm-verity-autoboot/metadata_parse.c:6:10: fatal error: dm-verity-autoboot.h: No such file or directory
+    6 | #include "dm-verity-autoboot.h"
+      |          ^~~~~~~~~~~~~~~~~~~~~~
+compilation terminated.
+make[5]: *** [scripts/Makefile.build:287: drivers/md/dm-verity-autoboot/metadata_parse.o] Error 1
+make[4]: *** [scripts/Makefile.build:556: drivers/md/dm-verity-autoboot] Error 2
+make[4]: *** Waiting for unfinished jobs....
+  CC [M]  drivers/md/bcache/alloc.o
+  AR      drivers/accessibility/braille/built-in.a
   CC [M]  drivers/accessibility/speakup/speakup_acntsa.o
-  CC [M]  drivers/isdn/mISDN/core.o
-  CC [M]  drivers/isdn/hardware/mISDN/hfcmulti.o
-  CC      drivers/edac/edac_mc.o
-  CC      drivers/opp/core.o
-drivers/md/dm-verity-autoboot.c: In function ‘verity_autoboot_main’:
-drivers/md/dm-verity-autoboot.c:315:31: error: implicit declaration of function ‘read_region’; did you mean ‘rename_region’? [-Werror=implicit-function-declaration]
-  315 |                         ret = read_region(bdev_file, le64_to_cpu(loc.meta_off),
-      |                               ^~~~~~~~~~~
-      |                               rename_region
-drivers/md/dm-verity-autoboot.c: At top level:
-drivers/md/dm-verity-autoboot.c:111:13: warning: ‘hex_encode’ defined but not used [-Wunused-function]
-  111 | static void hex_encode(const u8 *src, size_t len, char *dst)
-      |             ^~~~~~~~~~
-drivers/md/dm-verity-autoboot.c:69:13: warning: ‘dump_hex_short’ defined but not used [-Wunused-function]
-   69 | static void dump_hex_short(const char *tag, const u8 *buf, size_t len, size_t max_show)
-      |             ^~~~~~~~~~~~~~
-  CC      drivers/edac/edac_device.o
-drivers/md/dm-verity-autoboot.c: In function ‘verity_autoboot_main.isra’:
-drivers/md/dm-verity-autoboot.c:353:1: warning: the frame size of 4208 bytes is larger than 1024 bytes [-Wframe-larger-than=]
-  353 | }
-      | ^
-cc1: some warnings being treated as errors
-make[4]: *** [scripts/Makefile.build:287: drivers/md/dm-verity-autoboot.o] Error 1
-make[3]: *** [scripts/Makefile.build:556: drivers/md] Error 2
-make[3]: *** Waiting for unfinished jobs....
-  CC      drivers/opp/cpu.o
+  AR      drivers/accessibility/built-in.a
   CC [M]  drivers/accessibility/speakup/speakup_apollo.o
-  CC [M]  drivers/isdn/hardware/mISDN/hfcsusb.o
-  CC [M]  drivers/isdn/mISDN/fsm.o
-  CC [M]  drivers/isdn/mISDN/socket.o
-  CC      drivers/opp/debugfs.o
-  CC [M]  drivers/isdn/mISDN/clock.o
-  CC [M]  drivers/isdn/hardware/mISDN/avmfritz.o
-  CC      drivers/edac/edac_mc_sysfs.o
+  CC [M]  drivers/md/bcache/bset.o
+  CC [M]  drivers/md/bcache/btree.o
   CC [M]  drivers/accessibility/speakup/speakup_audptr.o
-  CC [M]  drivers/isdn/hardware/mISDN/speedfax.o
+  CC [M]  drivers/md/bcache/debug.o
+  CC [M]  drivers/md/bcache/extents.o
+  CC [M]  drivers/accessibility/speakup/speakup_bns.o
+  CC [M]  drivers/md/bcache/io.o
+  CC [M]  drivers/isdn/hardware/mISDN/hfcpci.o
+  CC [M]  drivers/md/bcache/journal.o
+  CC [M]  drivers/accessibility/speakup/speakup_dectlk.o
+  CC [M]  drivers/isdn/mISDN/core.o
+  AR      drivers/isdn/hardware/built-in.a
+  CC [M]  drivers/isdn/hardware/mISDN/hfcmulti.o
+  CC [M]  drivers/md/bcache/movinggc.o
+  CC      drivers/edac/edac_mc.o
+  CC [M]  drivers/accessibility/speakup/speakup_decext.o
+  CC [M]  drivers/isdn/hardware/mISDN/hfcsusb.o
+  CC [M]  drivers/md/bcache/request.o
+  CC [M]  drivers/accessibility/speakup/speakup_ltlk.o
+  CC      drivers/opp/core.o
+  CC [M]  drivers/isdn/mISDN/fsm.o
+  CC      drivers/edac/edac_device.o
+  CC [M]  drivers/accessibility/speakup/speakup_soft.o
+  CC [M]  drivers/md/bcache/stats.o
+  CC [M]  drivers/accessibility/speakup/speakup_spkout.o
+  CC [M]  drivers/isdn/mISDN/socket.o
+  CC [M]  drivers/isdn/hardware/mISDN/avmfritz.o
+  CC [M]  drivers/md/bcache/super.o
+  CC [M]  drivers/isdn/mISDN/clock.o
+  CC      drivers/edac/edac_mc_sysfs.o
+  CC [M]  drivers/accessibility/speakup/speakup_txprt.o
+  CC      drivers/opp/cpu.o
+  CC [M]  drivers/isdn/mISDN/hwchannel.o
+  CC [M]  drivers/accessibility/speakup/speakup_dummy.o
   CC      drivers/edac/edac_module.o
+  CC [M]  drivers/isdn/hardware/mISDN/speedfax.o
+  CC [M]  drivers/md/bcache/sysfs.o
+  CC [M]  drivers/accessibility/speakup/buffers.o
+  CC      drivers/opp/debugfs.o
+  CC      drivers/cpufreq/cpufreq.o
+  CC      drivers/edac/edac_device_sysfs.o
   CC [M]  drivers/isdn/hardware/mISDN/mISDNinfineon.o
   AR      drivers/opp/built-in.a
-  CC [M]  drivers/accessibility/speakup/speakup_bns.o
-  CC [M]  drivers/isdn/mISDN/hwchannel.o
-  CC [M]  drivers/isdn/hardware/mISDN/w6692.o
-  CC      drivers/edac/edac_device_sysfs.o
-  CC [M]  drivers/isdn/mISDN/stack.o
-  CC [M]  drivers/isdn/mISDN/layer1.o
-  CC [M]  drivers/accessibility/speakup/speakup_dectlk.o
-  CC [M]  drivers/isdn/hardware/mISDN/netjet.o
-  CC [M]  drivers/accessibility/speakup/speakup_decext.o
-  CC [M]  drivers/isdn/mISDN/layer2.o
-  CC      drivers/edac/wq.o
-  CC      drivers/edac/edac_pci.o
-  CC      drivers/edac/edac_pci_sysfs.o
-  CC [M]  drivers/accessibility/speakup/speakup_ltlk.o
-  CC [M]  drivers/isdn/hardware/mISDN/mISDNipac.o
-  CC      drivers/edac/ghes_edac.o
-  CC [M]  drivers/isdn/mISDN/tei.o
-  CC [M]  drivers/isdn/hardware/mISDN/mISDNisar.o
-  CC [M]  drivers/isdn/hardware/mISDN/isdnhdlc.o
-  CC [M]  drivers/isdn/mISDN/timerdev.o
-  CC [M]  drivers/edac/mce_amd.o
-  CC [M]  drivers/isdn/mISDN/dsp_core.o
-  CC [M]  drivers/accessibility/speakup/speakup_soft.o
-  CC [M]  drivers/edac/i5100_edac.o
-  CC [M]  drivers/edac/i5400_edac.o
-  CC [M]  drivers/isdn/mISDN/dsp_cmx.o
-  CC [M]  drivers/edac/i7300_edac.o
-  CC [M]  drivers/isdn/mISDN/dsp_tones.o
-  CC [M]  drivers/accessibility/speakup/speakup_spkout.o
-  CC [M]  drivers/edac/i7core_edac.o
-  CC [M]  drivers/isdn/mISDN/dsp_dtmf.o
-  CC [M]  drivers/accessibility/speakup/speakup_txprt.o
-  CC [M]  drivers/edac/sb_edac.o
-  CC [M]  drivers/accessibility/speakup/speakup_dummy.o
-  CC [M]  drivers/edac/pnd2_edac.o
-  CC [M]  drivers/isdn/mISDN/dsp_audio.o
-  CC [M]  drivers/edac/igen6_edac.o
-  CC [M]  drivers/edac/e752x_edac.o
-  CC [M]  drivers/accessibility/speakup/buffers.o
-  CC [M]  drivers/isdn/mISDN/dsp_blowfish.o
-  CC [M]  drivers/edac/i82975x_edac.o
-  CC [M]  drivers/isdn/mISDN/dsp_pipeline.o
-  CC [M]  drivers/isdn/mISDN/dsp_hwec.o
+  CC      drivers/cpuidle/governors/ladder.o
+  CC [M]  drivers/md/bcache/trace.o
   CC [M]  drivers/accessibility/speakup/devsynth.o
+  CC [M]  drivers/isdn/mISDN/stack.o
+  CC      drivers/edac/wq.o
+  CC      drivers/cpuidle/governors/menu.o
   CC [M]  drivers/accessibility/speakup/i18n.o
-  CC [M]  drivers/edac/i3000_edac.o
+  CC [M]  drivers/isdn/hardware/mISDN/w6692.o
+  CC      drivers/cpuidle/governors/teo.o
+  CC [M]  drivers/isdn/mISDN/layer1.o
+  CC      drivers/cpufreq/freq_table.o
   CC [M]  drivers/accessibility/speakup/fakekey.o
-  CC [M]  drivers/edac/i3200_edac.o
-  CC [M]  drivers/accessibility/speakup/main.o
-  CC [M]  drivers/edac/ie31200_edac.o
-  CC [M]  drivers/edac/x38_edac.o
-  CC [M]  drivers/isdn/mISDN/l1oip_core.o
-  CC [M]  drivers/edac/amd64_edac.o
+  CC      drivers/edac/edac_pci.o
+  CC      drivers/cpuidle/governors/haltpoll.o
+  CC [M]  drivers/md/bcache/util.o
+  CC [M]  drivers/isdn/hardware/mISDN/netjet.o
+  HOSTCC  drivers/accessibility/speakup/makemapdata.o
+  CC      drivers/cpufreq/cpufreq_stats.o
   CC [M]  drivers/accessibility/speakup/keyhelp.o
+  AR      drivers/cpuidle/governors/built-in.a
+  CC      drivers/cpuidle/cpuidle.o
+  CC [M]  drivers/md/bcache/writeback.o
+  CC      drivers/edac/edac_pci_sysfs.o
+  CC [M]  drivers/isdn/mISDN/layer2.o
+  CC [M]  drivers/isdn/hardware/mISDN/mISDNipac.o
+  CC      drivers/cpufreq/cpufreq_performance.o
   CC [M]  drivers/accessibility/speakup/kobjects.o
-  CC [M]  drivers/isdn/mISDN/l1oip_codec.o
+  CC [M]  drivers/md/bcache/features.o
+  CC      drivers/cpufreq/cpufreq_powersave.o
   CC [M]  drivers/accessibility/speakup/selection.o
+  CC      drivers/edac/ghes_edac.o
+  LD [M]  drivers/md/bcache/bcache.o
+make[3]: *** [scripts/Makefile.build:556: drivers/md] Error 2
+make[3]: *** Waiting for unfinished jobs....
+  CC [M]  drivers/isdn/hardware/mISDN/mISDNisar.o
+  CC      drivers/cpufreq/cpufreq_userspace.o
+  CC      drivers/cpuidle/driver.o
+  CC [M]  drivers/isdn/hardware/mISDN/isdnhdlc.o
+  CC [M]  drivers/edac/mce_amd.o
   CC [M]  drivers/accessibility/speakup/spk_ttyio.o
+  CC      drivers/cpufreq/cpufreq_ondemand.o
+  CC [M]  drivers/isdn/mISDN/tei.o
+  CC      drivers/cpuidle/governor.o
+  CC      drivers/cpuidle/sysfs.o
+  CC      drivers/cpufreq/cpufreq_conservative.o
   CC [M]  drivers/accessibility/speakup/synth.o
-  CC [M]  drivers/edac/skx_base.o
+  CC      drivers/cpuidle/poll_state.o
+  CC [M]  drivers/edac/i5100_edac.o
   CC [M]  drivers/accessibility/speakup/thread.o
   CC [M]  drivers/accessibility/speakup/varhandlers.o
-  CC [M]  drivers/edac/skx_common.o
-  CC [M]  drivers/edac/i10nm_base.o
+  CC      drivers/cpufreq/cpufreq_governor.o
+  CC [M]  drivers/isdn/mISDN/timerdev.o
+  CC [M]  drivers/cpuidle/cpuidle-haltpoll.o
+  CC      drivers/cpufreq/cpufreq_governor_attr_set.o
+  CC [M]  drivers/edac/i5400_edac.o
+  AR      drivers/cpuidle/built-in.a
+  CC      drivers/cpufreq/acpi-cpufreq.o
+  AR      drivers/isdn/built-in.a
+  CC [M]  drivers/isdn/mISDN/dsp_core.o
+  CC      drivers/cpufreq/amd-pstate.o
+  CC [M]  drivers/isdn/mISDN/dsp_cmx.o
+  CC      drivers/cpufreq/amd-pstate-trace.o
+  CC [M]  drivers/edac/i7300_edac.o
+  HOSTLD  drivers/accessibility/speakup/makemapdata
+  MKMAP   drivers/accessibility/speakup/mapdata.h
+  HOSTCC  drivers/accessibility/speakup/genmap.o
+  CC      drivers/cpufreq/powernow-k8.o
+  HOSTLD  drivers/accessibility/speakup/genmap
+  GENMAP  drivers/accessibility/speakup/speakupmap.h
+  CC [M]  drivers/accessibility/speakup/main.o
+  CC [M]  drivers/isdn/mISDN/dsp_tones.o
+  CC      drivers/cpufreq/pcc-cpufreq.o
+  CC [M]  drivers/edac/i7core_edac.o
+  CC      drivers/cpufreq/speedstep-centrino.o
+  CC [M]  drivers/edac/sb_edac.o
+  CC      drivers/cpufreq/intel_pstate.o
+  CC [M]  drivers/cpufreq/speedstep-lib.o
+  CC [M]  drivers/isdn/mISDN/dsp_dtmf.o
+  CC [M]  drivers/cpufreq/p4-clockmod.o
+  LD [M]  drivers/accessibility/speakup/speakup.o
+  CC [M]  drivers/edac/pnd2_edac.o
+  CC [M]  drivers/cpufreq/amd_freq_sensitivity.o
+  CC [M]  drivers/isdn/mISDN/dsp_audio.o
+  CC [M]  drivers/isdn/mISDN/dsp_blowfish.o
+  CC [M]  drivers/isdn/mISDN/dsp_pipeline.o
+  CC [M]  drivers/isdn/mISDN/dsp_hwec.o
+  CC [M]  drivers/edac/igen6_edac.o
+  AR      drivers/cpufreq/built-in.a
+  CC [M]  drivers/edac/e752x_edac.o
+  CC [M]  drivers/isdn/mISDN/l1oip_core.o
+  CC [M]  drivers/edac/i82975x_edac.o
+  CC [M]  drivers/edac/i3000_edac.o
+  CC [M]  drivers/isdn/mISDN/l1oip_codec.o
+  CC [M]  drivers/edac/i3200_edac.o
+  CC [M]  drivers/edac/ie31200_edac.o
+  CC [M]  drivers/edac/x38_edac.o
   LD [M]  drivers/isdn/mISDN/mISDN_core.o
   LD [M]  drivers/isdn/mISDN/mISDN_dsp.o
   LD [M]  drivers/isdn/mISDN/l1oip.o
-  LD [M]  drivers/accessibility/speakup/speakup.o
+  CC [M]  drivers/edac/amd64_edac.o
+  CC [M]  drivers/edac/skx_base.o
+  CC [M]  drivers/edac/skx_common.o
+  CC [M]  drivers/edac/i10nm_base.o
   LD [M]  drivers/edac/edac_mce_amd.o
-  AR      drivers/edac/built-in.a
   LD [M]  drivers/edac/skx_edac.o
   LD [M]  drivers/edac/skx_edac_common.o
+  AR      drivers/edac/built-in.a
   LD [M]  drivers/edac/i10nm_edac.o
 make[2]: *** [scripts/Makefile.build:556: drivers] Error 2
+make[2]: *** Waiting for unfinished jobs....
 make[1]: *** [/home/keti/Team-Project-2025/linux/Makefile:2010: .] Error 2
 make: *** [Makefile:248: __sub-make] Error 2
