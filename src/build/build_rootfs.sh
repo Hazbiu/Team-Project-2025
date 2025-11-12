@@ -12,7 +12,7 @@ OUTPUT_IMG="$BUILD_DIR/Binaries/rootfs.img"     # Final disk image
 TEMP_MOUNT="/mnt/temp-rootfs"                   # Temporary mount point
 
 echo "[1/4] Creating base Debian rootfs..."
-mkdir -p "$ROOTFS_DIR"
+sudo mkdir -p "$ROOTFS_DIR"
 
 # Only install Debian if it's not built already
 if [ ! -d "$ROOTFS_DIR/etc" ]; then
@@ -30,6 +30,14 @@ fi
 
 echo "[2/4] Configuring rootfs..."
 
+# Create mount point directories first
+sudo mkdir -p "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" "$ROOTFS_DIR/dev"
+
+# Mount special filesystems for chroot to work properly
+sudo mount -t proc proc "$ROOTFS_DIR/proc"
+sudo mount -t sysfs sys "$ROOTFS_DIR/sys"
+sudo mount -o bind /dev "$ROOTFS_DIR/dev"
+
 sudo chroot "$ROOTFS_DIR" bash -c '
 set -e
 export DEBIAN_FRONTEND=noninteractive
@@ -37,12 +45,18 @@ export DEBIAN_FRONTEND=noninteractive
 # Root password
 echo "root:root" | chpasswd
 
-# User "keti"
-if ! id -u keti &>/dev/null; then
-  useradd -m -s /bin/bash keti
+# Admin user for system management
+if ! id -u admin >/dev/null 2>&1; then
+  useradd -m -s /bin/bash admin
 fi
-echo "keti:keti" | chpasswd
-usermod -aG sudo keti
+echo "admin:admin" | chpasswd
+usermod -aG sudo admin
+
+# Standard user account
+if ! id -u user >/dev/null 2>&1; then
+  useradd -m -s /bin/bash user
+fi
+echo "user:user" | chpasswd
 
 # Hostname
 echo "secureboot-demo" > /etc/hostname
@@ -61,13 +75,22 @@ apt-get clean
 rm -rf /var/lib/apt/lists/*
 '
 
+# Unmount special filesystems
+sudo umount "$ROOTFS_DIR/proc"
+sudo umount "$ROOTFS_DIR/sys"
+sudo umount "$ROOTFS_DIR/dev"
+
 echo "  Basic configuration done."
 
-# Remove bind-mount-sensitive dirs and recreate empty
+# Clean up the directories (optional - they'll be recreated empty)
 sudo rm -rf "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" "$ROOTFS_DIR/dev"
-mkdir -p "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" "$ROOTFS_DIR/dev"
+sudo mkdir -p "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" "$ROOTFS_DIR/dev"
 
 echo "[3/4] Sizing disk image and creating single ext4 filesystem..."
+
+# Ensure we have write permissions to the output directory
+sudo mkdir -p "$(dirname "$OUTPUT_IMG")"
+sudo chown -R "$USER:$USER" "$(dirname "$OUTPUT_IMG")"
 
 # Estimate space for actual files
 ROOTFS_SIZE_MB=$(sudo du -s --block-size=1M "$ROOTFS_DIR" 2>/dev/null | awk '{print int($1*1.2)+100}')
@@ -84,6 +107,11 @@ echo "  Planned disk size:"
 echo "    - Data estimate : ${ROOTFS_SIZE_MB} MB"
 echo "    - Extra (verity): ${VERITY_SPACE_MB} MB"
 echo "    - Total disk    : ${DISK_SIZE_MB} MB"
+
+# Remove old image if it exists and is owned by root
+if [ -f "$OUTPUT_IMG" ] && [ ! -w "$OUTPUT_IMG" ]; then
+    sudo rm -f "$OUTPUT_IMG"
+fi
 
 # Create blank disk image
 truncate -s "${DISK_SIZE_MB}M" "$OUTPUT_IMG"
@@ -103,7 +131,7 @@ sync
 sudo umount "$TEMP_MOUNT"
 sudo rmdir "$TEMP_MOUNT"
 
-sudo chown "$USER:$USER" "$OUTPUT_IMG"
+sudo chown -R "$USER:$USER" "$ROOTFS_DIR"
 
 echo
 echo "========================================"
