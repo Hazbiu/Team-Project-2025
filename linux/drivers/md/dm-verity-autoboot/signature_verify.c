@@ -1,4 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0-only
+/**
+ * @file signature_verify.c
+ * @author Team A
+ * @brief PKCS7 signature verification for dm-verity metadata.
+ *
+ * This module verifies digital signatures attached to or detached from
+ * dm-verity metadata. It computes SHA-256 digests of the metadata region
+ * and checks them against the digest embedded in the PKCS7 signature using
+ * the kernel’s trusted keyring.
+ *
+ * @version 0.1
+ * @date 2025-11-12
+ * 
+ * @copyright Copyright (c) 2025
+ * 
+ */
 #include <linux/kernel.h>
 #include <crypto/hash.h>
 #include <crypto/pkcs7.h>
@@ -11,11 +26,23 @@
 #define VERITY_FOOTER_SIGNED_LEN   196
 #define VERITY_PKCS7_MAX           2048
 
+
+/* External helpers defined in dm-verity-autoboot.c */
 extern int compute_footer_digest(const struct verity_metadata_ondisk *meta,
                                  u8 digest[32]);
 extern int sha256_buf(const u8 *buf, size_t len, u8 digest[32]);
 
-/* ---- PKCS7 verification (attached footer) ---- */
+/**
+ * @brief Verify an attached PKCS7 signature in the dm-verity footer.
+ * 
+ * This function validates the PKCS7 signature embedded directly in
+ * the verity metadata footer. It computes a SHA-256 digest of the
+ * first 196 bytes (the signed portion) and compares it with the
+ * digest stored in the PKCS7 structure.
+ *
+ * @param meta Pointer to a metadata footer.
+ * @return 0 on success, negative errno on failure.
+ */
 int verify_signature_pkcs7_attached(const struct verity_metadata_ondisk *meta)
 {
 	u8 digest[32];
@@ -55,7 +82,20 @@ out_free:
 	return ret;
 }
 
-/* ---- PKCS7 verification (detached footer) ---- */
+/**
+ * @brief Verify a detached PKCS7 signature for dm-verity metadata.
+ * 
+ * This function handles detached signatures, where the metadata and
+ * signature are stored separately. It computes a SHA-256 digest over
+ * the metadata region and checks it against the PKCS7-provided digest
+ * after signature verification using the trusted keyring.
+ *
+ * @param meta_buf Pointer to the metadata buffer.
+ * @param meta_len Length of the metadata buffer in bytes.
+ * @param sig_buf Pointer to the PKCS7 signature buffe.
+ * @param sig_len Length of the PKCS7 signature in bytes.
+ * @return 0 on success, negative errno on failure.
+ */
 int verify_signature_pkcs7_detached(const u8 *meta_buf, u32 meta_len,
 				    const u8 *sig_buf,  u32 sig_len)
 {

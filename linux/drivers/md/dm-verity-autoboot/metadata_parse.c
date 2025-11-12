@@ -1,4 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0-only
+/**
+ * @file metadata_parse.c
+ * @author Team A
+ * @brief Verity metadata header parsing and logging.
+ *
+ * This module provides helper functions to read and display information
+ * from the dm-verity metadata header. It extracts block sizes, offsets, salt, and hash values, 
+ * then logs them for easier debugging and verification.
+ *
+ * @version 0.1
+ * @date 2025-11-12
+ * 
+ * @copyright Copyright (c) 2025
+ * 
+ */
 #include <linux/kernel.h>
 #include <linux/printk.h>
 #include <linux/string.h>
@@ -8,19 +22,14 @@
 
 #define DM_MSG_PREFIX "verity-autoboot"
 
-struct verity_metadata_header {
-	__le32 magic;
-	__le32 version;
-	__le64 data_blocks;
-	__le64 hash_start_sector;
-	__le32 data_block_size;
-	__le32 hash_block_size;
-	char   hash_algorithm[32];
-	u8     root_hash[64];
-	u8     salt[64];
-	__le32 salt_size;
-} __packed;
 
+/**
+ * @brief Encode binary data into a lowercase hexadecimal string.
+ *
+ * @param src Pointer to the source buffer.
+ * @param len Number of bytes to convert.
+ * @param dst Destination buffer (must be at least len*2 + 1 bytes).
+ */
 static void hex_encode(const u8 *src, size_t len, char *dst)
 {
 	static const char hexdig[] = "0123456789abcdef";
@@ -33,6 +42,17 @@ static void hex_encode(const u8 *src, size_t len, char *dst)
 	dst[2 * len] = '\0';
 }
 
+
+
+/**
+ * @brief Parse and display a dm-verity metadata header.
+ * 
+ * This function extracts key information from a verified verity_metadata_header, such as data and hash block sizes,
+ * number of data blocks, salt, and algorithm name. It also prints this information to the kernel log for debugging and verification.
+ *
+ * @param h Pointer to a verified metadata header describing data and hash layout.
+ * @return 0 on success, negative error code on failure.
+ */
 int verity_parse_metadata_header(const struct verity_metadata_header *h)
 {
 	char algo[33];

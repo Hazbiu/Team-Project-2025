@@ -1,15 +1,21 @@
-// SPDX-License-Identifier: GPL-2.0-only
-#ifndef _DM_VERITY_METADATA_PARSE_H_
-#define _DM_VERITY_METADATA_PARSE_H_
+#ifndef _VERITY_METADATA_PARSE_H
+#define _VERITY_METADATA_PARSE_H
 
 #include <linux/types.h>
 
-struct verity_metadata_header;
+struct verity_metadata_header {
+	__le32 magic;
+	__le32 version;
+	__le64 data_blocks;
+	__le64 hash_start_sector;
+	__le32 data_block_size;
+	__le32 hash_block_size;
+	char   hash_algorithm[32];
+	u8     root_hash[64];
+	u8     salt[64];
+	__le32 salt_size;
+} __packed;
 
-/*
- * Parse and log the metadata header (first 196 bytes).
- * Returns 0 on success, -EINVAL if the header is inconsistent.
- */
 int verity_parse_metadata_header(const struct verity_metadata_header *h);
 
-#endif
+#endif 
