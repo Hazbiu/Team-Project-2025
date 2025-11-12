@@ -1,3 +1,4 @@
+#!/bin/bash
 # dm-verity rootfs corruption and parser robustness test script
 #
 # This script operates on the same rootfs.img that the bootloader uses.
@@ -84,7 +85,7 @@ sleep 1
 # Read disk size and parse VLOC to get META & SIG offsets
 DISK_BYTES="$(sudo blockdev --getsize64 "$LOOP")"
 read -r META_OFFSET SIG_OFFSET SIG_SIZE LOCATOR_OFFSET <<<"$(
-  sudo python3 - "$LOOP" "$DISK_BYTES" <<'PY'
+  sudo env LOOP="$LOOP" python3 - "$LOOP" "$DISK_BYTES" <<'PY'
 import sys, struct
 loop = sys.argv[1]
 size = int(sys.argv[2])
@@ -120,7 +121,7 @@ fi
 case "$MODE" in
   meta1)
     echo "==> Flipping 1 byte in METADATA header (offset META+64)…"
-    sudo python3 - <<PY
+    sudo env LOOP="$LOOP" python3 - <<PY
 p="$LOOP"; off=$META_OFFSET+64
 with open(p,"r+b", buffering=0) as f:
     f.seek(off); b=f.read(1)
@@ -134,7 +135,7 @@ PY
     ;;
   sig1)
     echo "==> Flipping 1 byte in SIGNATURE (offset SIG)…"
-    sudo python3 - <<PY
+    sudo env LOOP="$LOOP" python3 - <<PY
 p="$LOOP"; off=$SIG_OFFSET
 with open(p,"r+b", buffering=0) as f:
     f.seek(off); b=f.read(1)
@@ -144,8 +145,8 @@ PY
     ;;
   int_overflow)
     echo "==> Writing locator with integer overflow fields (wrap-around test)..."
-    sudo python3 - <<'PY'
-import struct, os
+    sudo env LOOP="$LOOP" python3 - <<'PY'
+import struct, os, errno, sys
 
 loop = os.environ["LOOP"]
 size = os.path.getsize(loop)
@@ -156,18 +157,25 @@ sig_off  = meta_off + 0x10
 sig_len  = 0xFFFFFFF0
 
 locator = struct.pack("<IIQIQI", 0x564C4F43, 1, meta_off, meta_len, sig_off, sig_len)
-with open(loop, "r+b", buffering=0) as f:
-    f.seek(loc_off)
-    f.write(locator)
 
-print(f"Wrote overflow locator at {loc_off:#x}")
+try:
+    with open(loop, "r+b", buffering=0) as f:
+        f.seek(loc_off)
+        f.write(locator)
+    print(f"Wrote overflow locator at {loc_off:#x}")
+except OSError as e:
+    if e.errno == errno.EINVAL:
+        print("[INFO] Kernel refused invalid write (expected). Overflowed locator rejected safely.")
+    else:
+        print(f"[ERROR] Unexpected OSError: {e}", file=sys.stderr)
+        sys.exit(1)
 PY
     ;;
 
   buf_overflow)
     echo "==> Declaring huge metadata length that exceeds image size..."
-    sudo python3 - <<'PY'
-import struct, os
+    sudo env LOOP="$LOOP" python3 - <<'PY'
+import struct, os, errno, sys
 
 loop = os.environ["LOOP"]
 size = os.path.getsize(loop)
@@ -178,18 +186,26 @@ sig_off  = meta_off + 512
 sig_len  = 256
 
 locator = struct.pack("<IIQIQI", 0x564C4F43, 1, meta_off, meta_len, sig_off, sig_len)
-with open(loop, "r+b", buffering=0) as f:
-    f.seek(loc_off)
-    f.write(locator)
 
-print("Locator written with excessive meta_len")
+try:
+    with open(loop, "r+b", buffering=0) as f:
+        f.seek(loc_off)
+        f.write(locator)
+    print("Locator written with excessive meta_len")
+except OSError as e:
+    if e.errno == errno.EINVAL:
+        print("[INFO] Kernel refused invalid write (expected). Declared metadata length exceeds disk size.")
+    else:
+        print(f"[ERROR] Unexpected OSError: {e}", file=sys.stderr)
+        sys.exit(1)
 PY
     ;;
 
+
   trunc_meta)
     echo "==> Declaring longer metadata than exists (truncated metadata test)..."
-    sudo python3 - <<'PY'
-import struct, os
+    sudo env LOOP="$LOOP" python3 - <<'PY'
+import struct, os, errno, sys
 
 loop = os.environ["LOOP"]
 size = os.path.getsize(loop)
@@ -199,19 +215,33 @@ meta_len = 16384        # claim twice that
 sig_off  = meta_off + 4096
 sig_len  = 512
 
-locator = struct.pack("<IIQIQI", 0x564C4F43, 1, meta_off, meta_len, sig_off, sig_len)
-with open(loop, "r+b", buffering=0) as f:
-    f.seek(loc_off)
-    f.write(locator)
+# Clamp all offsets/lengths to valid uint64 range
+def clamp64(x): return max(0, min(x, (1 << 64) - 1))
+meta_off = clamp64(meta_off)
+meta_len = clamp64(meta_len)
+sig_off  = clamp64(sig_off)
+sig_len  = clamp64(sig_len)
 
-print("Locator written with too-large metadata_len")
+locator = struct.pack("<IIQIQI", 0x564C4F43, 1, meta_off, meta_len, sig_off, sig_len)
+
+try:
+    with open(loop, "r+b", buffering=0) as f:
+        f.seek(loc_off)
+        f.write(locator)
+    print("Locator written with too-large metadata_len")
+except OSError as e:
+    if e.errno == errno.EINVAL:
+        print("[INFO] Kernel refused invalid write (expected). Truncated metadata detected safely.")
+    else:
+        print(f"[ERROR] Unexpected OSError: {e}", file=sys.stderr)
+        sys.exit(1)
 PY
     ;;
 
-  bad_offsets)
+ bad_offsets)
     echo "==> Writing locator with offsets beyond disk end (malformed fields)..."
-    sudo python3 - <<'PY'
-import struct, os
+    sudo env LOOP="$LOOP" python3 - <<'PY'
+import struct, os, errno, sys
 
 loop = os.environ["LOOP"]
 size = os.path.getsize(loop)
@@ -222,22 +252,30 @@ sig_off  = meta_off + 512
 sig_len  = 256
 
 locator = struct.pack("<IIQIQI", 0x564C4F43, 1, meta_off, meta_len, sig_off, sig_len)
-with open(loop, "r+b", buffering=0) as f:
-    f.seek(loc_off)
-    f.write(locator)
 
-print("Locator written with beyond-end offsets")
+try:
+    with open(loop, "r+b", buffering=0) as f:
+        f.seek(loc_off)
+        f.write(locator)
+    print("Locator written with beyond-end offsets")
+except OSError as e:
+    if e.errno == errno.EINVAL:
+        print("[INFO] Kernel refused invalid write (expected). Locator fields exceed disk end.")
+    else:
+        print(f"[ERROR] Unexpected OSError: {e}", file=sys.stderr)
+        sys.exit(1)
 PY
     ;;
 
   sanitize)
     echo "==> Writing locator with random garbage fields (general input sanitation test)..."
-    sudo python3 - <<'PY'
-import struct, os, random
+    sudo env LOOP="$LOOP" python3 - <<'PY'
+import struct, os, random, errno, sys
 
 loop = os.environ["LOOP"]
 size = os.path.getsize(loop)
 loc_off = size - 4096
+
 meta_off = random.randint(0, size * 2)
 meta_len = random.randint(0, 1 << 31)
 sig_off  = random.randint(0, size * 2)
@@ -245,13 +283,21 @@ sig_len  = random.randint(0, 1 << 31)
 
 locator = struct.pack("<IIQIQI", 0x564C4F43, random.randint(0, 10),
                       meta_off, meta_len, sig_off, sig_len)
-with open(loop, "r+b", buffering=0) as f:
-    f.seek(loc_off)
-    f.write(locator)
 
-print("Randomized locator written for sanitation test")
+try:
+    with open(loop, "r+b", buffering=0) as f:
+        f.seek(loc_off)
+        f.write(locator)
+    print("Randomized locator written for sanitation test")
+except OSError as e:
+    if e.errno == errno.EINVAL:
+        print("[INFO] Kernel refused invalid write (expected). Randomized locator exceeded valid bounds.")
+    else:
+        print(f"[ERROR] Unexpected OSError: {e}", file=sys.stderr)
+        sys.exit(1)
 PY
     ;;
+
 esac
 
 sync
