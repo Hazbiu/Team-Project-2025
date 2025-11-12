@@ -169,58 +169,104 @@ openssl smime -sign -binary -noattr \
 SIG_SIZE=$(stat -c%s "$SIG_FILE")
 echo "  Signature size: $SIG_SIZE bytes"
 
-echo "[8/9] Laying out header+sig+locator at end of DISK..."
+echo "[8/9] Writing metadata header, signature, and locator to DISK in Python..."
+
 LOCATOR_SIZE=4096
-LOCATOR_OFFSET=$((DISK_SIZE - LOCATOR_SIZE))
-SIG_ALIGNED_SIZE=$(( (SIG_SIZE + 4095) / 4096 * 4096 ))
-SIG_OFFSET=$((LOCATOR_OFFSET - SIG_ALIGNED_SIZE))
-META_ALIGNED_SIZE=4096
-META_OFFSET=$((SIG_OFFSET - META_ALIGNED_SIZE))
+ALIGN=4096
 
-echo "  Disk size      : $DISK_SIZE"
-echo "  Meta  offset   : $META_OFFSET"
-echo "  Sig   offset   : $SIG_OFFSET"
-echo "  Locator offset : $LOCATOR_OFFSET"
+OFFSETS_FILE="$META_DIR/layout_offsets.sh"   # <--- NEW
 
-echo "  Building VLOC locator (4 KiB)..."
-python3 - <<EOF
-import struct
+sudo python3 - <<EOF
+import os, struct
 
-VLOC_MAGIC  = 0x564C4F43  # 'VLOC'
-VERSION     = 1
-META_OFF    = ${META_OFFSET}
-META_LEN    = ${META_LEN}
-SIG_OFF     = ${SIG_OFFSET}
-SIG_LEN     = ${SIG_SIZE}
+dev_path      = "${DISK_DEV}"
+meta_path     = "${METADATA_HEADER}"
+sig_path      = "${SIG_FILE}"
+meta_len_cfg  = ${META_LEN}         # expected header size from your format
+LOCATOR_SIZE  = ${LOCATOR_SIZE}
+ALIGN         = ${ALIGN}
+OFFSETS_FILE  = "${OFFSETS_FILE}"   # <--- NEW
 
-buf = bytearray(4096)
-off = 0
-struct.pack_into('<I', buf, off, VLOC_MAGIC); off += 4
-struct.pack_into('<I', buf, off, VERSION);    off += 4
-struct.pack_into('<Q', buf, off, META_OFF);   off += 8
-struct.pack_into('<I', buf, off, META_LEN);   off += 4
-struct.pack_into('<Q', buf, off, SIG_OFF);    off += 8
-struct.pack_into('<I', buf, off, SIG_LEN);    off += 4
-# rest is zero
-open("${LOCATOR_FILE}", "wb").write(buf)
-print("  Locator written: magic=VLOC, meta_off=%d, meta_len=%d, sig_off=%d, sig_len=%d"
-      % (META_OFF, META_LEN, SIG_OFF, SIG_LEN))
+# --- load header + signature from files ---
+with open(meta_path, "rb") as f:
+    meta = f.read()
+with open(sig_path, "rb") as f:
+    sig = f.read()
+
+meta_len = len(meta)
+sig_len  = len(sig)
+
+if meta_len != meta_len_cfg:
+    raise SystemExit(f"Metadata header size mismatch: expected {meta_len_cfg}, got {meta_len}")
+
+def align_up(x, a):
+    return ((x + a - 1) // a) * a
+
+sig_aligned_size = align_up(sig_len, ALIGN)
+meta_aligned_size = ALIGN  # always 4 KiB for the header region
+
+with open(dev_path, "rb+") as d:
+    # get total disk size by seeking to end
+    disk_size = d.seek(0, os.SEEK_END)
+
+    locator_offset = disk_size - LOCATOR_SIZE
+    sig_offset     = locator_offset - sig_aligned_size
+    meta_offset    = sig_offset - meta_aligned_size
+
+    print(f"  Disk size      : {disk_size}")
+    print(f"  Meta  offset   : {meta_offset}")
+    print(f"  Sig   offset   : {sig_offset}")
+    print(f"  Locator offset : {locator_offset}")
+
+    # --- build VLOC locator in memory ---
+    VLOC_MAGIC  = 0x564C4F43  # 'VLOC'
+    VERSION     = 1
+
+    buf = bytearray(LOCATOR_SIZE)
+    off = 0
+    struct.pack_into('<I', buf, off, VLOC_MAGIC); off += 4
+    struct.pack_into('<I', buf, off, VERSION);    off += 4
+    struct.pack_into('<Q', buf, off, meta_offset); off += 8
+    struct.pack_into('<I', buf, off, meta_len_cfg); off += 4
+    struct.pack_into('<Q', buf, off, sig_offset);  off += 8
+    struct.pack_into('<I', buf, off, sig_len);     off += 4
+    # rest of buf stays zero
+
+    # Optionally keep a copy on the host FS (like before)
+    with open("${LOCATOR_FILE}", "wb") as loc_f:
+        loc_f.write(buf)
+
+    # --- write metadata header (padded to 4 KiB) ---
+    d.seek(meta_offset)
+    d.write(meta)
+    if meta_aligned_size > meta_len:
+        d.write(b"\\x00" * (meta_aligned_size - meta_len))
+
+    # --- write signature (padded to aligned size) ---
+    d.seek(sig_offset)
+    d.write(sig)
+    if sig_aligned_size > sig_len:
+        d.write(b"\\x00" * (sig_aligned_size - sig_len))
+
+    # --- write locator footer (4 KiB) ---
+    d.seek(locator_offset)
+    d.write(buf)
+
+# --- export offsets for the shell ---   <--- NEW
+with open(OFFSETS_FILE, "w") as f:
+    f.write(f"META_OFFSET={meta_offset}\\n")
+    f.write(f"SIG_OFFSET={sig_offset}\\n")
+    f.write(f"LOCATOR_OFFSET={locator_offset}\\n")
+
+print("  Metadata, signature and locator written via Python.")
 EOF
 
-echo "  Writing metadata header to disk..."
-sudo dd if="$METADATA_HEADER" of="$DISK_DEV" bs=4096 \
-    seek=$((META_OFFSET/4096)) conv=notrunc status=none
+# Load offsets computed by Python so we can use them
+if [[ -f "$OFFSETS_FILE" ]]; then
+  # shellcheck source=/dev/null
+  . "$OFFSETS_FILE"
+fi
 
-echo "  Writing signature to disk..."
-sudo dd if="$SIG_FILE" of="$DISK_DEV" bs=4096 \
-    seek=$((SIG_OFFSET/4096)) conv=notrunc status=none
-
-echo "  Writing locator footer to disk..."
-sudo dd if="$LOCATOR_FILE" of="$DISK_DEV" bs=4096 \
-    seek=$((LOCATOR_OFFSET/4096)) conv=notrunc status=none
-
-sync
-sudo chown -R "$USER:$USER" "$META_DIR"
 
 echo
 echo "========================================"
