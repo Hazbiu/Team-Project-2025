@@ -1,24 +1,31 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-# Minimal dm-verity corrupter (1-byte flip) for your whole-disk rootfs image.
+# dm-verity rootfs corruption and parser robustness test script
 #
-# This operates on the same rootfs.img that the bootloader passes to QEMU:
-#   - bootloader realpaths ../build/Binaries/rootfs.img (from ../bootloaders)
-#   - this script defaults to ./Binaries/rootfs.img when run from src/build
+# This script operates on the same rootfs.img that the bootloader uses.
+# By default, it looks for ./Binaries/rootfs.img when run from src/build.
 #
 # Usage:
-#   ./corrupt_rootfs.sh <meta1|sig1> [image-path] [--inplace]
+#   ./corrupt_rootfs.sh <mode> [image-path] [--inplace]
 #
 # Modes:
-#   meta1 : flip 1 byte in 196-byte VERI header (at meta_off + 64)
-#   sig1  : flip 1 byte in detached PKCS#7 signature (at sig_off)
+#   meta1        – flip 1 byte in the dm-verity metadata header (meta_off + 64)
+#   sig1         – flip 1 byte in the detached PKCS#7 signature (sig_off)
+#   int_overflow – write locator fields with overflowed offsets/lengths to test wrap-around checks
+#   buf_overflow – set a metadata length that exceeds the image size to test bounds checking
+#   trunc_meta   – claim more metadata bytes than actually exist (truncated metadata test)
+#   bad_offsets  – use offsets that point beyond the end of the disk (malformed locator test)
+#   sanitize     – fill locator with random values to check general input validation
 #
 # Defaults:
-#   image-path = Binaries/rootfs.img (same image your bootloader uses)
-#   --inplace  : overwrite that file in place (so bootloader sees corruption)
-#   (without --inplace a copy *.bad.img is created instead)
-
+#   image-path = Binaries/rootfs.img
+#   --inplace  = modify the image directly (used by bootloader)
+#   Without --inplace, a new file *.bad.img is created instead.
+#
+# Purpose:
+#   This script helps verify that the kernel-side metadata parser fails safely
+#   when given corrupted or malformed input. Each mode targets a different class
+#   of error (overflow, truncation, bad offsets, random data) to confirm that
+#   the module rejects invalid data without crashing.
+set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMG_DEFAULT="$SCRIPT_DIR/Binaries/rootfs.img"
 
@@ -31,7 +38,7 @@ args=()
 for a in "$@"; do
   case "$a" in
     --inplace) INPLACE=1 ;;
-    meta1|sig1) MODE="$a" ;;
+    meta1|sig1|int_overflow|buf_overflow|trunc_meta|bad_offsets|sanitize) MODE="$a" ;;
     *) args+=("$a") ;;
   esac
 done
@@ -43,7 +50,7 @@ fi
 
 # Require a mode
 if [[ -z "${MODE:-}" ]]; then
-  echo "Usage: $0 <meta1|sig1> [image-path] [--inplace]" >&2
+  echo "Usage: $0 <meta1|sig1|int_overflow|buf_overflow|trunc_meta|bad_offsets|sanitize> [image-path] [--inplace]" >&2
   echo "  meta1 : flip 1 byte in VERI header" >&2
   echo "  sig1  : flip 1 byte in detached PKCS7 signature" >&2
   exit 2
@@ -70,6 +77,7 @@ echo "==> Output: $BAD_IMG"
 # Attach loop (whole disk, no partitions)
 echo "==> Attaching loop…"
 LOOP="$(sudo losetup -f --show -- "$BAD_IMG")"
+export LOOP   # make loop device path visible inside embedded python snippets
 trap 'sudo losetup -d "$LOOP" >/dev/null 2>&1 || true' EXIT
 sleep 1
 
@@ -134,6 +142,116 @@ with open(p,"r+b", buffering=0) as f:
 print("    flipped 1 byte at", off)
 PY
     ;;
+  int_overflow)
+    echo "==> Writing locator with integer overflow fields (wrap-around test)..."
+    sudo python3 - <<'PY'
+import struct, os
+
+loop = os.environ["LOOP"]
+size = os.path.getsize(loop)
+loc_off = size - 4096
+meta_off = 0xFFFFFFFFFFFFF000  # huge 64-bit offset to test wrap-around
+meta_len = 0xFFFFFFF0
+sig_off  = meta_off + 0x10
+sig_len  = 0xFFFFFFF0
+
+locator = struct.pack("<IIQIQI", 0x564C4F43, 1, meta_off, meta_len, sig_off, sig_len)
+with open(loop, "r+b", buffering=0) as f:
+    f.seek(loc_off)
+    f.write(locator)
+
+print(f"Wrote overflow locator at {loc_off:#x}")
+PY
+    ;;
+
+  buf_overflow)
+    echo "==> Declaring huge metadata length that exceeds image size..."
+    sudo python3 - <<'PY'
+import struct, os
+
+loop = os.environ["LOOP"]
+size = os.path.getsize(loop)
+loc_off = size - 4096
+meta_off = 4096
+meta_len = size * 10  # 10× larger than the disk
+sig_off  = meta_off + 512
+sig_len  = 256
+
+locator = struct.pack("<IIQIQI", 0x564C4F43, 1, meta_off, meta_len, sig_off, sig_len)
+with open(loop, "r+b", buffering=0) as f:
+    f.seek(loc_off)
+    f.write(locator)
+
+print("Locator written with excessive meta_len")
+PY
+    ;;
+
+  trunc_meta)
+    echo "==> Declaring longer metadata than exists (truncated metadata test)..."
+    sudo python3 - <<'PY'
+import struct, os
+
+loop = os.environ["LOOP"]
+size = os.path.getsize(loop)
+loc_off = size - 4096
+meta_off = size - 8192  # last 8K
+meta_len = 16384        # claim twice that
+sig_off  = meta_off + 4096
+sig_len  = 512
+
+locator = struct.pack("<IIQIQI", 0x564C4F43, 1, meta_off, meta_len, sig_off, sig_len)
+with open(loop, "r+b", buffering=0) as f:
+    f.seek(loc_off)
+    f.write(locator)
+
+print("Locator written with too-large metadata_len")
+PY
+    ;;
+
+  bad_offsets)
+    echo "==> Writing locator with offsets beyond disk end (malformed fields)..."
+    sudo python3 - <<'PY'
+import struct, os
+
+loop = os.environ["LOOP"]
+size = os.path.getsize(loop)
+loc_off = size - 4096
+meta_off = size + (1 << 30)  # +1GB beyond disk end
+meta_len = 512
+sig_off  = meta_off + 512
+sig_len  = 256
+
+locator = struct.pack("<IIQIQI", 0x564C4F43, 1, meta_off, meta_len, sig_off, sig_len)
+with open(loop, "r+b", buffering=0) as f:
+    f.seek(loc_off)
+    f.write(locator)
+
+print("Locator written with beyond-end offsets")
+PY
+    ;;
+
+  sanitize)
+    echo "==> Writing locator with random garbage fields (general input sanitation test)..."
+    sudo python3 - <<'PY'
+import struct, os, random
+
+loop = os.environ["LOOP"]
+size = os.path.getsize(loop)
+loc_off = size - 4096
+meta_off = random.randint(0, size * 2)
+meta_len = random.randint(0, 1 << 31)
+sig_off  = random.randint(0, size * 2)
+sig_len  = random.randint(0, 1 << 31)
+
+locator = struct.pack("<IIQIQI", 0x564C4F43, random.randint(0, 10),
+                      meta_off, meta_len, sig_off, sig_len)
+with open(loop, "r+b", buffering=0) as f:
+    f.seek(loc_off)
+    f.write(locator)
+
+print("Randomized locator written for sanitation test")
+PY
+    ;;
 esac
 
 sync
@@ -147,6 +265,21 @@ case "$MODE" in
     ;;
   sig1)
     echo "Expected: dm-verity parameters still parse, but PKCS7 verification fails in your module."
+    ;;
+    int_overflow)
+    echo "Expected: parser should detect wrap-around or overflow in locator offsets."
+    ;;
+  buf_overflow)
+    echo "Expected: kernel should safely reject metadata length exceeding image bounds."
+    ;;
+  trunc_meta)
+    echo "Expected: parser should fail cleanly on truncated metadata reads."
+    ;;
+  bad_offsets)
+    echo "Expected: parser should validate offsets and reject beyond-end values."
+    ;;
+  sanitize)
+    echo "Expected: parser should handle arbitrary garbage fields without panic."
     ;;
 esac
 
