@@ -149,17 +149,14 @@ PY
 
   int_overflow)
     echo "==> Writing locator with integer overflow fields (wrap-around test)..."
-    sudo python3 - <<'PY'
+    sudo env LOOP="$LOOP" LOCATOR_OFFSET="$LOCATOR_OFFSET" python3 - <<'PY'
 import struct, os
 
-img_path = "Binaries/rootfs.bad.img"
-size = os.path.getsize(img_path)
-loc_off = size - 4096
-
-print(f"Disk size: {size} bytes")
+loop_dev = os.environ['LOOP']
+loc_off = int(os.environ['LOCATOR_OFFSET'])
 
 # Read current locator first
-with open(img_path, "rb") as f:
+with open(loop_dev, "rb", buffering=0) as f:
     f.seek(loc_off)
     locator_data = f.read(24)
     magic, version, orig_meta_off, orig_meta_len, orig_sig_off, orig_sig_len = struct.unpack("<IIIIII", locator_data)
@@ -183,8 +180,8 @@ print(f"  sig_len:  {sig_len} (0x{sig_len:08x})")
 # Create new locator with CORRECT 4-byte format
 new_locator = struct.pack("<IIIIII", magic, version, meta_off, meta_len, sig_off, sig_len)
 
-# Write directly to file (bypass loop device restrictions)
-with open(img_path, "r+b") as f:
+# Write through loop device
+with open(loop_dev, "r+b", buffering=0) as f:
     f.seek(loc_off)
     f.write(new_locator)
     f.flush()
@@ -193,7 +190,7 @@ with open(img_path, "r+b") as f:
 print("SUCCESS: Locator corrupted with overflow values")
 
 # Verify
-with open(img_path, "rb") as f:
+with open(loop_dev, "rb", buffering=0) as f:
     f.seek(loc_off)
     verify_data = f.read(24)
     v_magic, v_ver, v_meta_off, v_meta_len, v_sig_off, v_sig_len = struct.unpack("<IIIIII", verify_data)
@@ -205,18 +202,14 @@ PY
 
   buf_overflow)
     echo "==> Setting huge metadata length (correct 4-byte format)..."
-    
-    sudo python3 - <<'PY'
+    sudo env LOOP="$LOOP" LOCATOR_OFFSET="$LOCATOR_OFFSET" python3 - <<'PY'
 import struct, os
 
-img_path = "Binaries/rootfs.bad.img"
-size = os.path.getsize(img_path)
-loc_off = size - 4096
-
-print(f"Disk size: {size} bytes")
+loop_dev = os.environ['LOOP']
+loc_off = int(os.environ['LOCATOR_OFFSET'])
 
 # Read current locator
-with open(img_path, "rb") as f:
+with open(loop_dev, "rb", buffering=0) as f:
     f.seek(loc_off)
     locator_data = f.read(24)
     magic, version, meta_off, meta_len, sig_off, sig_len = struct.unpack("<IIIIII", locator_data)
@@ -234,8 +227,8 @@ print(f"Setting meta_len to: {new_meta_len} (0x{new_meta_len:08x})")
 # Create new locator with corrupted meta_len
 new_locator = struct.pack("<IIIIII", magic, version, meta_off, new_meta_len, sig_off, sig_len)
 
-# Write back to file
-with open(img_path, "r+b") as f:
+# Write back through loop device
+with open(loop_dev, "r+b", buffering=0) as f:
     f.seek(loc_off)
     f.write(new_locator)
     f.flush()
@@ -244,30 +237,29 @@ with open(img_path, "r+b") as f:
 print("SUCCESS: Locator corrupted with huge meta_len")
 
 # Verify
-with open(img_path, "rb") as f:
+with open(loop_dev, "rb", buffering=0) as f:
     f.seek(loc_off)
     verify_data = f.read(24)
     v_magic, v_ver, v_meta_off, v_meta_len, v_sig_off, v_sig_len = struct.unpack("<IIIIII", verify_data)
     print("After corruption:")
     print(f"  meta_len: {v_meta_len} (0x{v_meta_len:08x})")
     print(f"  Verification: {'SUCCESS' if v_meta_len == new_meta_len else 'FAILED'}")
-    print(f"  Exceeds disk size: {'YES' if v_meta_len > size else 'NO'}")
 PY
     ;;
 
   trunc_meta)
     echo "==> Declaring longer metadata than exists (truncated metadata test)..."
-    sudo python3 - <<'PY'
+    sudo env LOOP="$LOOP" LOCATOR_OFFSET="$LOCATOR_OFFSET" DISK_BYTES="$DISK_BYTES" python3 - <<'PY'
 import struct, os
 
-img_path = "Binaries/rootfs.bad.img"
-size = os.path.getsize(img_path)
-loc_off = size - 4096
+loop_dev = os.environ['LOOP']
+loc_off = int(os.environ['LOCATOR_OFFSET'])
+size = int(os.environ['DISK_BYTES'])
 
 print(f"Disk size: {size} bytes")
 
 # Read current locator first
-with open(img_path, "rb") as f:
+with open(loop_dev, "rb", buffering=0) as f:
     f.seek(loc_off)
     locator_data = f.read(24)
     magic, version, orig_meta_off, orig_meta_len, orig_sig_off, orig_sig_len = struct.unpack("<IIIIII", locator_data)
@@ -290,8 +282,8 @@ print(f"  Would read to: {meta_off + meta_len} (beyond disk end!)")
 # Create new locator
 new_locator = struct.pack("<IIIIII", magic, version, meta_off, meta_len, sig_off, sig_len)
 
-# Write directly to file
-with open(img_path, "r+b") as f:
+# Write through loop device
+with open(loop_dev, "r+b", buffering=0) as f:
     f.seek(loc_off)
     f.write(new_locator)
     f.flush()
@@ -300,7 +292,7 @@ with open(img_path, "r+b") as f:
 print("SUCCESS: Locator corrupted with truncated metadata claim")
 
 # Verify
-with open(img_path, "rb") as f:
+with open(loop_dev, "rb", buffering=0) as f:
     f.seek(loc_off)
     verify_data = f.read(24)
     v_magic, v_ver, v_meta_off, v_meta_len, v_sig_off, v_sig_len = struct.unpack("<IIIIII", verify_data)
@@ -312,17 +304,17 @@ PY
 
   bad_offsets)
     echo "==> Writing locator with offsets beyond disk end (malformed fields)..."
-    sudo python3 - <<'PY'
+    sudo env LOOP="$LOOP" LOCATOR_OFFSET="$LOCATOR_OFFSET" DISK_BYTES="$DISK_BYTES" python3 - <<'PY'
 import struct, os
 
-img_path = "Binaries/rootfs.bad.img"
-size = os.path.getsize(img_path)
-loc_off = size - 4096
+loop_dev = os.environ['LOOP']
+loc_off = int(os.environ['LOCATOR_OFFSET'])
+size = int(os.environ['DISK_BYTES'])
 
 print(f"Disk size: {size} bytes")
 
 # Read current locator first
-with open(img_path, "rb") as f:
+with open(loop_dev, "rb", buffering=0) as f:
     f.seek(loc_off)
     locator_data = f.read(24)
     magic, version, orig_meta_off, orig_meta_len, orig_sig_off, orig_sig_len = struct.unpack("<IIIIII", locator_data)
@@ -344,8 +336,8 @@ print(f"  meta_len: {meta_len}, sig_len: {sig_len}")
 # Create new locator
 new_locator = struct.pack("<IIIIII", magic, version, meta_off, meta_len, sig_off, sig_len)
 
-# Write directly to file
-with open(img_path, "r+b") as f:
+# Write through loop device
+with open(loop_dev, "r+b", buffering=0) as f:
     f.seek(loc_off)
     f.write(new_locator)
     f.flush()
@@ -354,7 +346,7 @@ with open(img_path, "r+b") as f:
 print("SUCCESS: Locator corrupted with beyond-end offsets")
 
 # Verify
-with open(img_path, "rb") as f:
+with open(loop_dev, "rb", buffering=0) as f:
     f.seek(loc_off)
     verify_data = f.read(24)
     v_magic, v_ver, v_meta_off, v_meta_len, v_sig_off, v_sig_len = struct.unpack("<IIIIII", verify_data)
@@ -366,14 +358,11 @@ PY
 
   sanitize)
     echo "==> Writing locator with random garbage fields (general input sanitation test)..."
-    sudo python3 - <<'PY'
+    sudo env LOOP="$LOOP" LOCATOR_OFFSET="$LOCATOR_OFFSET" python3 - <<'PY'
 import struct, os, random
 
-img_path = "Binaries/rootfs.bad.img"
-size = os.path.getsize(img_path)
-loc_off = size - 4096
-
-print(f"Disk size: {size} bytes")
+loop_dev = os.environ['LOOP']
+loc_off = int(os.environ['LOCATOR_OFFSET'])
 
 # Generate random values for all fields
 magic = random.randint(0, 0xFFFFFFFF)
@@ -394,8 +383,8 @@ print(f"  sig_len:  0x{sig_len:08x} ({sig_len})")
 # Create completely random locator
 random_locator = struct.pack("<IIIIII", magic, version, meta_off, meta_len, sig_off, sig_len)
 
-# Write directly to file
-with open(img_path, "r+b") as f:
+# Write through loop device
+with open(loop_dev, "r+b", buffering=0) as f:
     f.seek(loc_off)
     f.write(random_locator)
     f.flush()
@@ -404,7 +393,7 @@ with open(img_path, "r+b") as f:
 print("SUCCESS: Locator replaced with random garbage")
 
 # Verify
-with open(img_path, "rb") as f:
+with open(loop_dev, "rb", buffering=0) as f:
     f.seek(loc_off)
     verify_data = f.read(24)
     v_magic, v_ver, v_meta_off, v_meta_len, v_sig_off, v_sig_len = struct.unpack("<IIIIII", verify_data)
