@@ -629,6 +629,7 @@ static int verity_autoboot_main(void)
 				struct verity_footer_locator loc;
 				u8 *meta_buf = NULL, *sig_buf = NULL;
 				const struct verity_metadata_header *h;
+				loff_t disk_size;
 
 				memcpy(&loc, tail, sizeof(loc));
 				pr_info("%s: Footer mode: detached (VLOC)\n",
@@ -639,6 +640,66 @@ static int verity_autoboot_main(void)
 					le32_to_cpu(loc.meta_len),
 					(unsigned long long)le64_to_cpu(loc.sig_off),
 					le32_to_cpu(loc.sig_len));
+				
+				    
+				
+				disk_size = i_size_read(file_inode(bdev_file));
+				pr_info("%s: VALIDATION: disk_size=%lld, checking locator fields...\n",
+        		DM_MSG_PREFIX, disk_size);
+				
+				/* Validate meta region */
+				if (le64_to_cpu(loc.meta_off) >= disk_size) {
+					pr_err("%s: meta_off %llu beyond disk size %lld\n",
+						DM_MSG_PREFIX, 
+						(unsigned long long)le64_to_cpu(loc.meta_off),
+						disk_size);
+					fput(bdev_file);
+					return -EINVAL;
+				}
+				if (le32_to_cpu(loc.meta_len) == 0 || 
+					le32_to_cpu(loc.meta_len) > (8U << 20)) { // 8MB sanity limit
+					pr_err("%s: invalid meta_len %u\n",
+						DM_MSG_PREFIX, le32_to_cpu(loc.meta_len));
+					fput(bdev_file);
+					return -EINVAL;
+				}
+				if (le64_to_cpu(loc.meta_off) + le32_to_cpu(loc.meta_len) > disk_size ||
+					le64_to_cpu(loc.meta_off) + le32_to_cpu(loc.meta_len) < le64_to_cpu(loc.meta_off)) {
+					pr_err("%s: meta region [%llu, %llu] exceeds disk size %lld or overflows\n",
+						DM_MSG_PREFIX,
+						(unsigned long long)le64_to_cpu(loc.meta_off),
+						(unsigned long long)le64_to_cpu(loc.meta_off) + le32_to_cpu(loc.meta_len),
+						disk_size);
+					fput(bdev_file);
+					return -EINVAL;
+				}
+
+				/* Validate sig region */
+				if (le64_to_cpu(loc.sig_off) >= disk_size) {
+					pr_err("%s: sig_off %llu beyond disk size %lld\n",
+						DM_MSG_PREFIX,
+						(unsigned long long)le64_to_cpu(loc.sig_off),
+						disk_size);
+					fput(bdev_file);
+					return -EINVAL;
+				}
+				if (le32_to_cpu(loc.sig_len) == 0 || 
+					le32_to_cpu(loc.sig_len) > VERITY_PKCS7_MAX) {
+					pr_err("%s: invalid sig_len %u\n",
+						DM_MSG_PREFIX, le32_to_cpu(loc.sig_len));
+					fput(bdev_file);
+					return -EINVAL;
+				}
+				if (le64_to_cpu(loc.sig_off) + le32_to_cpu(loc.sig_len) > disk_size ||
+					le64_to_cpu(loc.sig_off) + le32_to_cpu(loc.sig_len) < le64_to_cpu(loc.sig_off)) {
+					pr_err("%s: sig region [%llu, %llu] exceeds disk size %lld or overflows\n",
+						DM_MSG_PREFIX,
+						(unsigned long long)le64_to_cpu(loc.sig_off),
+						(unsigned long long)le64_to_cpu(loc.sig_off) + le32_to_cpu(loc.sig_len),
+						disk_size);
+					fput(bdev_file);
+					return -EINVAL;
+				}
 
 				ret = read_region(bdev_file, le64_to_cpu(loc.meta_off),
 						  le32_to_cpu(loc.meta_len), &meta_buf);
