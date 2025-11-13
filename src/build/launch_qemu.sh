@@ -1,6 +1,7 @@
+#!/bin/bash
 #
-# QEMU System Launcher with dm-verity Support
-# ==============================================
+# QEMU System Launcher
+# ==================================================================
 #
 # Purpose: Boots Linux kernel with dm-verity enabled root filesystem
 #
@@ -25,7 +26,16 @@
 # The script automatically detects all available test images and presents
 # them in a numbered menu for easy selection.
 #
+
 set -eo pipefail
+
+# Colors for better readability
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
 
 # Paths
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,13 +55,13 @@ APPEND_CMD="console=ttyS0 loglevel=7 root=/dev/dm-0 rootfstype=ext4 rootwait \
 dm_verity_autoboot.autoboot_device=/dev/vda \
 dm_verity_autoboot.mode=verify_and_map"
 
-echo "===================================================================="
-echo "QEMU System Launcher with dm-verity Support"
-echo "===================================================================="
+echo "=================================================="
+echo "               QEMU System Launcher               "
+echo "=================================================="
 
 # Check if original image exists
 if [[ ! -f "$ORIGINAL_ROOTFS" ]]; then
-    echo "WARNING: Original image not found at: $ORIGINAL_ROOTFS"
+    echo -e "${YELLOW}WARNING: Original image not found at: $ORIGINAL_ROOTFS${NC}"
     ORIGINAL_EXISTS=0
 else
     ORIGINAL_EXISTS=1
@@ -59,7 +69,7 @@ fi
 
 # Validate we have at least one image to boot
 if [[ $ORIGINAL_EXISTS -eq 0 && ${#TEST_IMAGES[@]} -eq 0 ]]; then
-    echo "ERROR: No bootable images found!" >&2
+    echo -e "${RED}ERROR: No bootable images found!${NC}" >&2
     echo ""
     echo "SETUP REQUIRED:"
     echo "---------------"
@@ -84,7 +94,7 @@ echo "AVAILABLE BOOT IMAGES:"
 echo "----------------------"
 
 if [[ $ORIGINAL_EXISTS -eq 1 ]]; then
-    echo "  1) Original image ($(basename "$ORIGINAL_ROOTFS"))"
+    echo -e "  ${GREEN}1) Original image${NC} ($(basename "$ORIGINAL_ROOTFS"))"
     echo "     - Clean, uncorrupted root filesystem"
     echo "     - Expected: Successful boot with dm-verity verification"
     menu_start=2
@@ -93,16 +103,17 @@ else
     menu_start=1
 fi
 
-# Display test images with descriptions
+# Display test images with brief descriptions
 for i in "${!TEST_IMAGES[@]}"; do
     img_name=$(basename "${TEST_IMAGES[i]}")
     # Extract mode name from filename (rootfs.MODE.test.img -> MODE)
     mode_name="${img_name#rootfs.}"
     mode_name="${mode_name%.test.img}"
     
-    echo "  $((i + menu_start))) $mode_name test image"
-        #Description of Test images
-        case "$mode_name" in
+    echo -e "  ${CYAN}$((i + menu_start))) $mode_name test image${NC}"
+    
+    # Brief one-line descriptions
+    case "$mode_name" in
         meta1) echo "     - Corrupts header structure" ;;
         sig1) echo "     - Corrupts PKCS#7 signature" ;;
         int_overflow) echo "     - Tests integer overflow protection" ;;
@@ -121,31 +132,35 @@ if [[ $ORIGINAL_EXISTS -eq 0 && ${#TEST_IMAGES[@]} -gt 0 ]]; then
     default_choice=1
     ROOTFS="${TEST_IMAGES[0]}"
     echo ""
-    echo "NOTE: Original image not found, defaulting to first test image"
+    echo -e "${YELLOW}NOTE: Original image not found, defaulting to first test image${NC}"
 else
     ROOTFS="$ORIGINAL_ROOTFS"
 fi
 
 # Get user selection
 echo ""
-read -r -p "Select boot image [1-$max_choice] (default: $default_choice): " choice
+read -t 60 -r -p "Select boot image [1-$max_choice] (default: $default_choice, auto-selects after 60s): " choice
+if [[ -z "$choice" ]]; then
+    choice=$default_choice
+    echo -e "\n${YELLOW}No selection made within 60 seconds. Using default: $choice${NC}"
+fi
+
 
 # Process selection
 if [[ $ORIGINAL_EXISTS -eq 1 ]]; then
     case "${choice:-$default_choice}" in
         1)
             ROOTFS="$ORIGINAL_ROOTFS"
-            echo "✓ Using ORIGINAL image - expected successful boot"
+            echo -e "${GREEN}✓ Using original image${NC}"
             ;;
         *)
             index=$((choice - 2))
             if [[ $index -ge 0 && $index -lt ${#TEST_IMAGES[@]} ]]; then
                 ROOTFS="${TEST_IMAGES[index]}"
-                echo "✓ Using TEST image: $(basename "$ROOTFS")"
-                echo "  Expected: dm-verity validation failure"
+                echo -e "${CYAN}✓ Using test image: $(basename "$ROOTFS")${NC}"
             else
                 ROOTFS="$ORIGINAL_ROOTFS"
-                echo "⚠ Invalid selection, using ORIGINAL image"
+                echo -e "${YELLOW}⚠ Invalid choice, using original image${NC}"
             fi
             ;;
     esac
@@ -154,22 +169,20 @@ else
     index=$((choice - 1))
     if [[ $index -ge 0 && $index -lt ${#TEST_IMAGES[@]} ]]; then
         ROOTFS="${TEST_IMAGES[index]}"
-        echo "✓ Using TEST image: $(basename "$ROOTFS")"
-        echo "  Expected: dm-verity validation failure"
+        echo -e "${CYAN}✓ Using test image: $(basename "$ROOTFS")${NC}"
     else
         ROOTFS="${TEST_IMAGES[0]}"
-        echo "⚠ Invalid selection, using first TEST image: $(basename "$ROOTFS")"
+        echo -e "${YELLOW}⚠ Invalid choice, using first test image: $(basename "$ROOTFS")${NC}"
     fi
 fi
 
 # Verify the selected image exists
 if [[ ! -f "$ROOTFS" ]]; then
-    echo "ERROR: Selected image not found: $ROOTFS" >&2
-    echo "Please check the file exists and try again."
+    echo -e "${RED}ERROR: Selected image not found: $ROOTFS${NC}" >&2
     exit 1
 fi
 
-# Display execution preview
+# Display some details
 echo ""
 echo "BOOT CONFIGURATION:"
 echo "-------------------"
@@ -179,11 +192,16 @@ echo "Memory:    1024MB"
 echo "Console:   Serial (ttyS0)"
 echo "-------------------"
 
-# Brief pause to let user read the configuration
-sleep 1
 
-echo "Starting QEMU..."
+# Brief pause to let user read the configuration
+echo "Starting QEMU in 2 seconds..."
+sleep 2
+
+echo ""
 echo "===================================================================="
+echo "Starting QEMU - Watch for kernel output below..."
+echo "===================================================================="
+echo ""
 
 # Actually run QEMU
 exec qemu-system-x86_64 \
