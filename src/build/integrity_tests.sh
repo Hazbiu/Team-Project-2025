@@ -117,17 +117,18 @@ fi
 if (( ! INPLACE )) && (( ! YES )) && [[ -t 0 ]]; then
   echo "Corruption mode: $MODE"
   echo "Target image: $IMG"
+  echo "Test image: rootfs.${MODE}.test.img"
   echo ""
   echo "Choose an option:"
-  echo "  1) Create a new file (rootfs.bad.img) - SAFER"
-  echo "  2) Overwrite the original file (rootfs.img) - DANGEROUS"
+  echo "  1) Create test image (rootfs.${MODE}.test.img) - SAFER"
+  echo "  2) Overwrite the original file (rootfs.img) - DANGEROUS" 
   echo "  3) Cancel"
   echo ""
   read -r -p "Enter your choice [1/2/3] (default: 1): " choice
   case "${choice:-1}" in
     1) 
       INPLACE=0
-      echo "Will create a new .bad.img file"
+      echo "Will create test image: rootfs.${MODE}.test.img"
       ;;
     2)
       INPLACE=1
@@ -166,10 +167,12 @@ if (( INPLACE )); then
   fi
   echo "==> IN-PLACE corruption requested on $IMG"
 else
-  # create a temp file next to the original image
+#Always create mode-specific test image
   tmpdir="$(dirname -- "$IMG")"
-  BAD_IMG="$(mktemp --tmpdir="$tmpdir" "$(basename "${IMG%.img}").bad.XXXXXX.img")"
-  echo "==> Creating copy: $BAD_IMG"
+  BAD_IMG="$tmpdir/rootfs.${MODE}.test.img"
+  
+  echo "==> Creating mode-specific test image: $BAD_IMG"
+  
   if (( DRYRUN )); then
     echo "(dry-run) would copy $IMG -> $BAD_IMG"
   else
