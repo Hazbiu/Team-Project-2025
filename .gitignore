@@ -2,4 +2,4 @@
 # Ignore generated root filesystem
 src/build/Binaries/rootfs/
 src/build/Binaries/rootfs.img
-src/build/Binaries/metadata/
+src/build/Binaries/metadata/src/build/Binaries/kernel_image.bin
