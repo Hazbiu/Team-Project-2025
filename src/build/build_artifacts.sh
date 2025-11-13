@@ -41,21 +41,5 @@ if [[ ! -f "$ROOTFS_IMG" ]]; then
 fi
 
 echo -e "${YELLOW}rootfs.img ready at:${RESET} $ROOTFS_IMG"
-echo -e "${YELLOW}Bootloader will use this image directly (no copy).${RESET}"
 
-# [3] Launch bootloader
-echo -e "${YELLOW}[3/3] Launching bootloader...${RESET}"
-cd "$BOOTLOADER_DIR"
 
-# adjust name if your binary is different (bootloader vs secondary_bootloader)
-if sudo ./secondary_bootloader; then
-    echo -e "${GREEN}✔ Bootloader executed successfully${RESET}"
-else
-    echo -e "${RED}✖ Bootloader failed to execute${RESET}"
-    exit 1
-fi
-
-echo -e "${GREEN}========================================"
-echo -e " All stages completed successfully!"
-echo -e " System is ready and booted."
-echo -e "========================================${RESET}"
