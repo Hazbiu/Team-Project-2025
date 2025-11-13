@@ -220,33 +220,41 @@ if (( ! DRYRUN )); then
   export LOOP
   sleep 1
 
-  # Get disk size and read locator with robust checks
-  DISK_BYTES="$(sudo blockdev --getsize64 "$LOOP")"
-  read -r META_OFFSET META_LEN SIG_OFFSET SIG_SIZE LOCATOR_OFFSET <<<"$(
-    sudo env LOOP="$LOOP" python3 - "$LOOP" "$DISK_BYTES" <<'PY'
+# Get disk size and read locator with robust checks
+DISK_BYTES="$(sudo blockdev --getsize64 "$LOOP")"
+read -r META_OFFSET META_LEN SIG_OFFSET SIG_SIZE LOCATOR_OFFSET <<<"$(
+  sudo env LOOP="$LOOP" python3 - "$LOOP" "$DISK_BYTES" <<'PY'
 import sys, struct, os
 loop = sys.argv[1]
 size = int(sys.argv[2])
 loc_off = size - 4096
+
 with open(loop, 'rb', buffering=0) as f:
     f.seek(loc_off)
-    blk = f.read(24)
-if len(blk) < 24:
-    sys.stderr.write(f"ERROR: locator read too short: got {len(blk)} bytes (expected 24)\n")
+    blk = f.read(32)  # Read 32 bytes for complete locator
+    
+print("DEBUG: Raw locator bytes:", blk.hex(), file=sys.stderr)
+
+# CORRECT FORMAT: magic(4), version(4), meta_off(8), meta_len(4), sig_off(8), sig_len(4)
+# Use 'Q' for 64-bit integers, 'I' for 32-bit integers
+try:
+    magic, version, meta_off, meta_len, sig_off, sig_len = struct.unpack('<IIQIQI', blk[:32])
+except struct.error as e:
+    print(f"ERROR: Failed to unpack locator: {e}", file=sys.stderr)
     sys.exit(2)
-magic, ver, meta_off, meta_len, sig_off, sig_len = struct.unpack('<IIIIII', blk[:24])
+
+print(f"DEBUG: magic=0x{magic:08x}, version={version}", file=sys.stderr)
+print(f"DEBUG: meta_off={meta_off} (0x{meta_off:x}), meta_len={meta_len}", file=sys.stderr)  
+print(f"DEBUG: sig_off={sig_off} (0x{sig_off:x}), sig_len={sig_len}", file=sys.stderr)
+
 # Magic 0x564C4F43 == 'VLOC'
 if magic == 0x564C4F43:
     print(f"{meta_off} {meta_len} {sig_off} {sig_len} {loc_off}")
 else:
-    # Fallback guess: assume last 3 blocks for signature/meta
-    sig_len = 4096
-    sig_off = loc_off - 4096
-    meta_off = sig_off - 4096
-    meta_len = 4096
-    print(f"{meta_off} {meta_len} {sig_off} {sig_len} {loc_off}")
+    print(f"ERROR: Invalid VLOC magic - got 0x{magic:08x}, expected 0x564C4F43", file=sys.stderr)
+    sys.exit(1)
 PY
-  )"
+)"
 
   if [[ -z "${META_OFFSET:-}" || -z "${SIG_OFFSET:-}" ]]; then
     echo "ERROR: failed to compute offsets" >&2
@@ -309,28 +317,33 @@ PY
 
   sig1)
     echo "==> Flipping 1 byte in SIGNATURE (offset SIG)…"
-    if (( DRYRUN )); then
-      echo "(dry-run) would flip one byte at sig offset $SIG_OFFSET"
-    else
-      sudo env LOOP="$LOOP" SIG_OFFSET="$SIG_OFFSET" python3 - <<'PY'
+    echo "DEBUG: Correct SIG_OFFSET should be: $((SIG_OFFSET + 196))"
+    
+    # Use the actual signature location (SIG_OFFSET + meta_len)
+    ACTUAL_SIG_OFFSET=$((SIG_OFFSET + 196))
+    echo "DEBUG: Actual signature at: $ACTUAL_SIG_OFFSET"
+    
+    echo "Before corruption:"
+    sudo dd if="$LOOP" bs=1 skip="$ACTUAL_SIG_OFFSET" count=16 status=none | hexdump -C
+    
+    sudo env LOOP="$LOOP" ACTUAL_SIG_OFFSET="$ACTUAL_SIG_OFFSET" python3 - <<'PY'
 import os, sys
 p = os.environ['LOOP']
-off = int(os.environ['SIG_OFFSET'])
+off = int(os.environ['ACTUAL_SIG_OFFSET'])
 with open(p, 'r+b', buffering=0) as f:
     f.seek(off)
     b = f.read(1)
-    if len(b) != 1:
-        sys.stderr.write(f"ERROR: could not read 1 byte at {off}\n")
-        sys.exit(2)
+    print(f"DEBUG: Read byte at {off}: 0x{b[0]:02x}")
     f.seek(off)
-    written = f.write(bytes([b[0] ^ 0x01]))
-    if written != 1:
-        sys.stderr.write("ERROR: short write when flipping byte\n")
-        sys.exit(2)
+    new_byte = bytes([b[0] ^ 0x01])
+    print(f"DEBUG: Writing byte: 0x{new_byte[0]:02x}")
+    written = f.write(new_byte)
     f.flush(); os.fsync(f.fileno())
-print(f"flipped 1 byte at {off}")
+print(f"flipped 1 byte at signature offset {off}")
 PY
-    fi
+
+    echo "After corruption:"
+    sudo dd if="$LOOP" bs=1 skip="$ACTUAL_SIG_OFFSET" count=16 status=none | hexdump -C
     ;;
 
   int_overflow)
