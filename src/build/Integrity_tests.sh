@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
-# corrupt_rootfs_patched.sh
-# Safer, more robust version of corrupt_rootfs.sh
-# Features added:
-#  - --dry-run, --verbose, --yes, --backup, --restore
-#  - explicit tool checks
-#  - safer loop device lifecycle and traps
-#  - robust locator read/write validation in embedded Python
-#  - better logging (hex + decimal) and checksum before/after
-#  - temporary copy created with mktemp (fallback to plain copy)
-#  - short-write detection and readable errors
-#  - minimal portability considerations
+# dm-verity Parser Robustness Tester
+# Tests kernel's ability to safely handle corrupted disk metadata
+# 
+# Creates intentionally corrupted rootfs images to verify that:
+# - dm-verity parser rejects invalid metadata without crashing
+# - Kernel fails safely when integrity checks don't pass
+# - All corruption scenarios are handled gracefully
+#
+# Test modes target specific parser vulnerabilities (header, signature, 
+# bounds checking, overflow protection, input validation).
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -115,14 +114,35 @@ if [[ ! -f "$IMG" ]]; then
   echo "ERROR: image not found: $IMG" >&2
   exit 1
 fi
-
-# If inplace requested, require explicit --yes when running interactively
-if (( INPLACE )) && (( ! YES )) && [[ -t 0 ]]; then
-  read -r -p "You requested --inplace and may overwrite $IMG. Continue? [y/N] " resp
-  if [[ ! "$resp" =~ ^[Yy]$ ]]; then
-    echo "Aborted. Use --yes to skip this prompt." >&2
-    exit 1
-  fi
+if (( ! INPLACE )) && (( ! YES )) && [[ -t 0 ]]; then
+  echo "Corruption mode: $MODE"
+  echo "Target image: $IMG"
+  echo ""
+  echo "Choose an option:"
+  echo "  1) Create a new file (rootfs.bad.img) - SAFER"
+  echo "  2) Overwrite the original file (rootfs.img) - DANGEROUS"
+  echo "  3) Cancel"
+  echo ""
+  read -r -p "Enter your choice [1/2/3] (default: 1): " choice
+  case "${choice:-1}" in
+    1) 
+      INPLACE=0
+      echo "Will create a new .bad.img file"
+      ;;
+    2)
+      INPLACE=1
+      echo "WARNING: Will overwrite the original image!"
+      read -r -p "Are you sure? This cannot be undone! [y/N] " confirm
+      if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "Operation cancelled."
+        exit 0
+      fi
+      ;;
+    3|*)
+      echo "Operation cancelled."
+      exit 0
+      ;;
+  esac
 fi
 
 # Prepare output image
@@ -200,7 +220,7 @@ if (( ! DRYRUN )); then
   export LOOP
   sleep 1
 
-  # Get disk size and read locator (via python) with robust checks
+  # Get disk size and read locator with robust checks
   DISK_BYTES="$(sudo blockdev --getsize64 "$LOOP")"
   read -r META_OFFSET META_LEN SIG_OFFSET SIG_SIZE LOCATOR_OFFSET <<<"$(
     sudo env LOOP="$LOOP" python3 - "$LOOP" "$DISK_BYTES" <<'PY'
