@@ -1,6 +1,20 @@
 #!/bin/bash
 set -euo pipefail
 
+# =============================================================================
+# Root Filesystem Image Builder
+# 
+# This script creates a complete root filesystem disk image containing:
+# - Base Debian system with essential packages
+# - Pre-configured user accounts (root, admin, user)
+# - Network and system configuration
+# - Single ext4 filesystem spanning the entire disk image (no partitions)
+# - Reserved space for dm-verity integrity protection metadata
+#
+# The resulting image is designed for secure boot environments with
+# integrity verification capabilities.
+# =============================================================================
+
 echo "========================================"
 echo "  Building Rootfs on Single-Disk Image (NO GPT)"
 echo "========================================"
@@ -143,8 +157,7 @@ echo "Structure:"
 echo "  - Single block device (no GPT, no partitions)"
 echo "  - ext4 filesystem spanning (most of) the whole image"
 echo "  - Extra free space at the end reserved for:"
-echo "      dm-verity hash tree + metadata header + detached signature + VLOC footer"
+echo "  - dm-verity hash tree + metadata header + detached signature + VLOC footer"
 echo
-echo "Next step: Run the dm-verity metadata generation script"
-echo "  (the one that works on the WHOLE disk and writes VLOC at the end)."
+echo "Next step: Run the dm-verity metadata generation script (generate_verity.sh)"
 echo "========================================"

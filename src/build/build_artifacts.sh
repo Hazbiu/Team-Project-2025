@@ -1,7 +1,19 @@
 #!/bin/bash
 set -euo pipefail
 
-# Colors for readability
+# =============================================================================
+# Unified Boot Preparation & Launch Script
+# 
+# This script automates the process of:
+# 1. Building a root filesystem image
+# 2. Generating dm-verity metadata for integrity verification
+# 3. Preparing the system for boot with verified root filesystem
+#
+# The script ensures each step completes successfully before proceeding
+# to the next, providing clear status feedback with colored titles.
+# =============================================================================
+
+# Colors for readability 
 GREEN="\033[0;32m"
 RED="\033[0;31m"
 YELLOW="\033[1;33m"
@@ -10,6 +22,7 @@ RESET="\033[0m"
 echo -e "${YELLOW}========================================"
 echo -e " Unified Boot Preparation & Launch Script"
 echo -e "========================================${RESET}"
+echo ""
 
 # Paths
 BUILD_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -21,7 +34,7 @@ echo -e "${YELLOW}[1/3] Building Root Filesystem...${RESET}"
 if bash "$BUILD_DIR/build_rootfs.sh"; then
     echo -e "${GREEN}✔ Root filesystem built successfully${RESET}"
 else
-    echo -e "${RED}✖ Failed to build root filesystem${RESET}"
+    echo -e "${RED}✖ Failed to build rootfs${RESET}"
     exit 1
 fi
 
@@ -41,5 +54,3 @@ if [[ ! -f "$ROOTFS_IMG" ]]; then
 fi
 
 echo -e "${YELLOW}rootfs.img ready at:${RESET} $ROOTFS_IMG"
-
-

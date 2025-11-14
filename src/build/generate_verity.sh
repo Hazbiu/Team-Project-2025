@@ -1,6 +1,20 @@
 #!/bin/bash
 set -euo pipefail
 
+# =============================================================================
+# dm-verity Metadata Generator
+# 
+# This script generates and configures dm-verity integrity protection for a
+# root filesystem disk image. It creates:
+# - Merkle tree hash for filesystem blocks
+# - Signed metadata header with verification parameters  
+# - Detached PKCS7 signature for cryptographic verification
+# - Disk locator footer for boot-time discovery
+#
+# The implementation uses whole-disk approach without partition tables and
+# integrates with secure boot systems through kernel keyring verification.
+# =============================================================================
+
 echo "========================================"
 echo "  Generating dm-verity metadata"
 echo "  (DETACHED PKCS7, NO superblock, WHOLE DISK)"
@@ -174,7 +188,7 @@ echo "[8/9] Writing metadata header, signature, and locator to DISK in Python...
 LOCATOR_SIZE=4096
 ALIGN=4096
 
-OFFSETS_FILE="$META_DIR/layout_offsets.sh"   # <--- NEW
+OFFSETS_FILE="$META_DIR/layout_offsets.sh"   
 
 sudo python3 - <<EOF
 import os, struct
@@ -182,10 +196,10 @@ import os, struct
 dev_path      = "${DISK_DEV}"
 meta_path     = "${METADATA_HEADER}"
 sig_path      = "${SIG_FILE}"
-meta_len_cfg  = ${META_LEN}         # expected header size from your format
+meta_len_cfg  = ${META_LEN}         # expected header size from format
 LOCATOR_SIZE  = ${LOCATOR_SIZE}
 ALIGN         = ${ALIGN}
-OFFSETS_FILE  = "${OFFSETS_FILE}"   # <--- NEW
+OFFSETS_FILE  = "${OFFSETS_FILE}"  
 
 # --- load header + signature from files ---
 with open(meta_path, "rb") as f:
@@ -252,7 +266,7 @@ with open(dev_path, "rb+") as d:
     d.seek(locator_offset)
     d.write(buf)
 
-# --- export offsets for the shell ---   <--- NEW
+# --- export offsets for the shell ---   
 with open(OFFSETS_FILE, "w") as f:
     f.write(f"META_OFFSET={meta_offset}\\n")
     f.write(f"SIG_OFFSET={sig_offset}\\n")
