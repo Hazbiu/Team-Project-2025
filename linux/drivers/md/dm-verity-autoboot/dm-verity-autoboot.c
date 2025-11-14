@@ -337,7 +337,7 @@ static int verity_autoboot_main(void)
 
 				h = (const struct verity_metadata_header *)meta;
 
-				/* NEW: Validate + log metadata fields using separated logic */
+				//Validate + log metadata fields using separated logic */
 				ret = verity_parse_metadata_header(h);
 				if (ret) {
 					kfree(meta);
@@ -373,10 +373,19 @@ static int verity_autoboot_main(void)
 				struct verity_footer_locator loc;
 				u8 *meta_buf = NULL, *sig_buf = NULL;
 				const struct verity_metadata_header *h;
+				loff_t disk_size;
+				u64 meta_end, sig_end;
+
 
 				memcpy(&loc, tail, sizeof(loc));
+
+	
+				disk_size = i_size_read(file_inode(bdev_file));
+
 				pr_info("%s: Footer mode: detached (VLOC)\n",
 					DM_MSG_PREFIX);
+				pr_info("%s: VALIDATION: disk_size=%lld, checking locator fields...\n",
+        		DM_MSG_PREFIX, disk_size);
 				pr_info("%s:   meta_off=%llu meta_len=%u sig_off=%llu sig_len=%u\n",
 					DM_MSG_PREFIX,
 					(unsigned long long)le64_to_cpu(loc.meta_off),
@@ -384,6 +393,91 @@ static int verity_autoboot_main(void)
 					(unsigned long long)le64_to_cpu(loc.sig_off),
 					le32_to_cpu(loc.sig_len));
 
+				pr_info("%s: DEBUG: meta_off=%llu, meta_len=%u, disk_size=%lld\n",
+					DM_MSG_PREFIX,
+					(unsigned long long)le64_to_cpu(loc.meta_off),
+					le32_to_cpu(loc.meta_len),
+					disk_size);
+				pr_info("%s: DEBUG: meta_off + meta_len = %llu\n",
+					DM_MSG_PREFIX,
+					(unsigned long long)(le64_to_cpu(loc.meta_off) + le32_to_cpu(loc.meta_len)));
+
+				pr_info("%s: VALIDATION: checking locator fields...\n", DM_MSG_PREFIX);
+
+		
+				/* Validate meta region */
+				if (le64_to_cpu(loc.meta_off) >= disk_size) {
+					pr_emerg("%s: VALIDATION FAILED: meta_off %llu beyond disk size %lld\n",
+            			    DM_MSG_PREFIX,
+						(unsigned long long)le64_to_cpu(loc.meta_off),
+						disk_size);
+					fput(bdev_file);
+
+					return -EINVAL;
+				}
+				if (le32_to_cpu(loc.meta_len) == 0 || 
+					le32_to_cpu(loc.meta_len) > (8U << 20)) { // 8MB sanity limit
+					pr_emerg("%s: VALIDATION FAILED: invalid meta_len %u\n",
+						DM_MSG_PREFIX, le32_to_cpu(loc.meta_len));
+					fput(bdev_file);
+					return -EINVAL;
+				}
+
+				meta_end = le64_to_cpu(loc.meta_off) + le32_to_cpu(loc.meta_len);
+				if (meta_end < le64_to_cpu(loc.meta_off)) {
+					// This detects overflow
+					pr_emerg("%s: VALIDATION FAILED: meta region overflow (meta_off + meta_len wraps around)\n",
+						DM_MSG_PREFIX);
+					fput(bdev_file);
+					return -EINVAL;
+				}
+				if (meta_end > disk_size) {
+					pr_emerg("%s: VALIDATION FAILED: meta region [%llu, %llu] exceeds disk size %lld\n",
+						DM_MSG_PREFIX,
+						(unsigned long long)le64_to_cpu(loc.meta_off),
+						(unsigned long long)meta_end,
+						disk_size);
+					fput(bdev_file);
+					return -EINVAL;
+				}
+
+				/* Validate sig region */
+				if (le64_to_cpu(loc.sig_off) >= disk_size) {
+					pr_emerg("%s: VALIDATION FAILED: sig_off %llu beyond disk size %lld\n",
+						DM_MSG_PREFIX,
+						(unsigned long long)le64_to_cpu(loc.sig_off),
+						disk_size);
+					fput(bdev_file);
+					return -EINVAL;
+				}
+				if (le32_to_cpu(loc.sig_len) == 0 || 
+					le32_to_cpu(loc.sig_len) > VERITY_PKCS7_MAX) {
+					pr_emerg("%s: VALIDATION FAILED:  invalid sig_len %u\n",
+						DM_MSG_PREFIX, le32_to_cpu(loc.sig_len));
+					fput(bdev_file);
+					return -EINVAL;
+				}
+				
+				sig_end = le64_to_cpu(loc.sig_off) + le32_to_cpu(loc.sig_len);
+				if (sig_end < le64_to_cpu(loc.sig_off)) {
+					// This detects overflow
+					pr_emerg("%s: VALIDATION FAILED: sig region overflow (sig_off + sig_len wraps around)\n",
+						DM_MSG_PREFIX);
+					fput(bdev_file);
+					return -EINVAL;
+				}
+				if (sig_end > disk_size) {
+					pr_emerg("%s: VALIDATION FAILED: sig region [%llu, %llu] exceeds disk size %lld\n",
+						DM_MSG_PREFIX,
+						(unsigned long long)le64_to_cpu(loc.sig_off),
+						(unsigned long long)sig_end,
+						disk_size);
+					fput(bdev_file);
+					return -EINVAL;
+				}
+
+				pr_info("%s: VALIDATION PASSED: proceeding with read_region...\n", DM_MSG_PREFIX);
+				
 				ret = read_region(bdev_file, le64_to_cpu(loc.meta_off),
 						  le32_to_cpu(loc.meta_len), &meta_buf);
 				if (ret) {
