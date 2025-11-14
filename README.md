@@ -55,11 +55,11 @@ The VLOC (Verity LOCator) footer at the end of the disk provides offsets to the 
           │
           ▼
 ┌──────────────────────────────────────────────┐
-│ dm-verity autoboot stack                    │
-│  - dm-verity-autoboot.c                     │
-│  - metadata_parse.c                         │
-│  - signature_verify.c                       │
-│  - mapping.c                                │
+│ dm-verity autoboot stack                     │
+│  - dm-verity-autoboot.c                      │
+│  - metadata_parse.c                          │
+│  - signature_verify.c                        │
+│  - mapping.c                                 │
 │                                              │
 │ 1. Read tail 4 KiB → detect VERI vs VLOC     │
 │ 2. Read metadata + PKCS7 signature           │
