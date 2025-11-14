@@ -5,24 +5,34 @@ A production-ready implementation of dm-verity with PKCS7 signature verification
 ## Overview
 
 This solution implements a complete secure boot chain where:
-1. A minimal bootloader launches QEMU with a Linux kernel
-2. A custom kernel module (`dm-verity-autoboot`) performs signature verification
-3. The verified filesystem is mounted as the root device
+
+1. The host launches QEMU directly with a Linux kernel and a raw disk image.
+2. A **modular** in-kernel helper (`dm-verity-autoboot` family) performs dm-verity setup and signature verification.
+3. The verified filesystem is mounted as the root device.
+
+The early-boot helper is now split into four logical components:
+
+- `dm-verity-autoboot.c` – orchestration, device discovery, footer detection.
+- `metadata_parse.c` – safe parsing and logging of metadata headers.
+- `signature_verify.c` – PKCS7 verification for attached/detached metadata.
+- `mapping.c` – construction of the dm-verity device-mapper target.
 
 ### Key Features
 
-- **Whole-disk dm-verity**: No partition table overhead; entire disk is used efficiently
-- **Detached PKCS7 signatures**: Metadata and signatures stored separately at disk end
-- **Built-in kernel verification**: No initramfs required; verification happens in kernel space
-- **Zero-touch boot**: Fully automated verification and mounting
-- **Production-ready**: Comprehensive error handling and logging
-- **Tamper detection**: Included corruption testing tool for validation
+- **Whole-disk dm-verity** – No partition table overhead; entire disk is used efficiently.  
+- **Detached PKCS7 signatures** – Metadata and signatures stored separately at disk end.  
+- **Built-in kernel verification** – No initramfs required; verification happens in kernel space.  
+- **Zero-touch boot** – Fully automated verification and mapping to `/dev/dm-0`.  
+- **Modular kernel design** – Clear separation of parsing, verification, and mapping logic.  
+- **Robustness suite** – `integrity_tests.sh` to fuzz metadata and test parser hardening.  
+
+---
 
 ## Architecture
 
 ### On-Disk Layout
 
-```
+```text
 [ext4 filesystem data] [dm-verity hash tree] [metadata header] [PKCS7 signature] [VLOC locator]
                                               ↑                 ↑                   ↑
                                               196 bytes         DER format          4 KiB footer
@@ -32,30 +42,45 @@ The VLOC (Verity LOCator) footer at the end of the disk provides offsets to the 
 
 ### Boot Flow
 
+```text
+┌────────────────────┐
+│   Host System      │  Runs src/build/launch_qemu.sh
+│ (user space)       │  QEMU + kernel + rootfs.img
+└─────────┬──────────┘
+          │
+          ▼
+┌────────────────────┐
+│   Linux Kernel     │  Boots, initializes virtio-blk (/dev/vda)
+└─────────┬──────────┘
+          │
+          ▼
+┌──────────────────────────────────────────────┐
+│ dm-verity autoboot stack                    │
+│  - dm-verity-autoboot.c                     │
+│  - metadata_parse.c                         │
+│  - signature_verify.c                       │
+│  - mapping.c                                │
+│                                              │
+│ 1. Read tail 4 KiB → detect VERI vs VLOC     │
+│ 2. Read metadata + PKCS7 signature           │
+│ 3. Verify PKCS7 via kernel trusted keyring   │
+│ 4. Create dm-verity mapping (/dev/dm-0)      │
+└─────────┬────────────────────────────────────┘
+          │
+          ▼
+┌────────────────────┐
+│    Root Mount      │  Kernel mounts /dev/dm-0 as ext4 root
+│     (verified)     │  System boots from verified filesystem
+└────────────────────┘
 ```
-┌─────────────────┐
-│   Bootloader    │  Launches QEMU with kernel cmdline:
-│  (user space)   │  dm_verity_autoboot.autoboot_device=/dev/vda
-└────────┬────────┘  root=/dev/dm-0
-         │
-         ▼
-┌─────────────────┐
-│  Linux Kernel   │  Boots, initializes virtio-blk (/dev/vda)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ dm-verity-      │  1. Read VLOC footer from /dev/vda
-│ autoboot module │  2. Read metadata header + PKCS7 signature
-│ (kernel space)  │  3. Verify PKCS7 against kernel keyring
-└────────┬────────┘  4. Create dm-verity mapping (/dev/dm-0)
-         │
-         ▼
-┌─────────────────┐
-│  Root Mount     │  Kernel mounts /dev/dm-0 as ext4 root
-│   (verified)    │  System boots from verified filesystem
-└─────────────────┘
+
+The kernel command line used by QEMU is:
+
+```text
+console=ttyS0 loglevel=7 root=/dev/dm-0 rootfstype=ext4 rootwait dm_verity_autoboot.autoboot_device=/dev/vda dm_verity_autoboot.mode=verify_and_map
 ```
+
+---
 
 ## Prerequisites
 
@@ -64,34 +89,21 @@ The VLOC (Verity LOCator) footer at the end of the disk provides offsets to the 
 - Linux-based development environment (Ubuntu 20.04+ or Debian 11+ recommended)
 - Minimum 4 GB RAM for building
 - 10 GB free disk space
-- sudo/root access for image creation and loop devices
+- `sudo`/root access for image creation and loop devices
 
 ### Software Dependencies
 
-Install all required packages:
-
 ```bash
-# Update package lists
 sudo apt update
 
 # 1. Build tools and essentials
-sudo apt install -y \
-    build-essential \
-    git \
-    wget \
-    curl \
-    ca-certificates \
-    pkg-config \
-    libssl-dev
+sudo apt install -y     build-essential     git     wget     curl     ca-certificates     pkg-config     libssl-dev
 
 # 2. QEMU virtualization
 sudo apt install -y qemu-system-x86 qemu-utils
 
 # 3. Root filesystem tools
-sudo apt install -y \
-    debootstrap \
-    e2fsprogs \
-    rsync
+sudo apt install -y     debootstrap     e2fsprogs     rsync
 
 # 4. dm-verity tools
 sudo apt install -y cryptsetup veritysetup
@@ -105,328 +117,439 @@ sudo apt install -y openssl
 
 ### Kernel Requirements
 
-The custom kernel module requires:
-- Linux kernel 5.10 or later
-- `CONFIG_DM_VERITY=y` (dm-verity support)
-- `CONFIG_SYSTEM_DATA_VERIFICATION=y` (PKCS7 verification)
-- `CONFIG_CRYPTO_SHA256=y` (SHA-256 hashing)
+The custom kernel helper requires:
 
-The provided kernel image (`kernel_image.bin`) includes all necessary components built-in.
+- Linux kernel 5.10 or later  
+- `CONFIG_DM_VERITY=y` (dm-verity support)  
+- `CONFIG_SYSTEM_DATA_VERIFICATION=y` (PKCS7 verification)  
+- `CONFIG_CRYPTO_SHA256=y` (SHA-256 hashing)  
+
+The repository expects an in-tree kernel under `linux/`, with the module sources placed in:
+
+```text
+linux/drivers/md/dm-verity-autoboot/
+    dm-verity-autoboot.c
+    mapping.c / mapping.h
+    metadata_parse.c / metadata_parse.h
+    signature_verify.c / signature_verify.h
+    Makefile
+```
+
+The built kernel image is exported to `src/bootloaders/kernel_image.bin`.
+
+---
 
 ## Project Structure
 
-```
+High-level layout:
+
+```text
 .
-├── boot/
-│   ├── bl_private.pem          # Signing private key
-│   └── bl_cert.pem             # Signing certificate
-├── bootloaders/
-│   ├── bootloader.c            # QEMU launcher (C implementation)
-│   └── secondary_bootloader    # Compiled bootloader binary
-├── build/
-│   ├── Binaries/
-│   │   ├── rootfs/             # Debian root filesystem tree
-│   │   ├── rootfs.img          # Final disk image
-│   │   └── metadata/           # dm-verity artifacts
-│   ├── build_rootfs.sh         # Creates ext4 disk image
-│   ├── generate_verity.sh      # Generates dm-verity metadata + signatures
-│   ├── launch_boot.sh          # Master orchestration script
-│   └── corrupt_rootfs.sh       # Testing tool for tampering detection
-├── kernel/
-│   ├── dm-verity-autoboot.c    # Custom kernel module
-│   └── kernel_image.bin        # Pre-built kernel with module
+├── linux/                         # Linux kernel tree (git submodule)
+│   └── drivers/md/dm-verity-autoboot/
+│       ├── dm-verity-autoboot.c   # Orchestrator (device + footer handling)
+│       ├── mapping.c/.h           # dm-verity mapping construction
+│       ├── metadata_parse.c/.h    # Safe header parsing + logging
+│       ├── signature_verify.c/.h  # PKCS7 verification (attached/detached)
+│       └── Makefile
+├── rootfs/                        # Rootfs seed/configuration
+└── src/
+    ├── boot/
+    │   ├── bl_private.pem         # Signing private key (generated locally)
+    │   └── bl_cert.pem            # Signing certificate
+    ├── bootloaders/
+    │   ├── bzImage                # Built kernel image
+    │   ├── kernel_image.bin       # Copy used by QEMU
+    │   └── qemu_main.sh           # (Optional) helper / menu launcher
+    └── build/
+        ├── Binaries/
+        │   ├── rootfs.img         # Final whole-disk ext4 image
+        │   └── metadata/          # dm-verity artifacts
+        ├── build_artifacts.sh     # Rootfs + verity orchestration
+        ├── build_rootfs.sh        # Creates ext4 disk image
+        ├── generate_verity.sh     # Builds hash tree + metadata + VLOC
+        ├── integrity_tests.sh     # Robustness & fuzz testing suite
+        └── launch_qemu.sh         # QEMU launcher (no separate bootloader)
+├── Dockerfile
 └── README.md
 ```
 
+---
+
 ## Component Details
 
-### 1. build_rootfs.sh
+### 1. `build_rootfs.sh`
 
 Creates a minimal Debian-based root filesystem on a single-disk image without partitions.
 
 **Features:**
-- Uses `debootstrap` to create base Debian system
-- Configures default users (root/keti) and networking
-- Sizes disk to accommodate filesystem + dm-verity overhead
-- Creates ext4 directly on whole disk (no GPT)
 
-**Output:** `build/Binaries/rootfs.img`
+- Uses `debootstrap` to create base Debian system.  
+- Configures default users and networking.  
+- Sizes disk to accommodate filesystem + dm-verity overhead.  
+- Creates ext4 directly on the whole disk (no GPT).  
 
-**Default Credentials:**
-- Root user: `root` / `root`
-- Regular user: `keti` / `keti` (sudo enabled)
+**Output:** `src/build/Binaries/rootfs.img`  
 
-### 2. generate_verity.sh
+---
 
-Generates dm-verity hash tree and cryptographic metadata.
+### 2. `generate_verity.sh`
+
+Generates dm-verity Merkle tree and cryptographic metadata.
 
 **Process:**
-1. Analyzes filesystem geometry
-2. Calculates and allocates space for Merkle tree
-3. Generates hash tree with `veritysetup`
-4. Creates 196-byte metadata header
-5. Signs header with PKCS7 (detached signature)
-6. Writes metadata, signature, and VLOC locator to disk end
 
-**Output:** 
-- `metadata/root.hash` - Root hash (hex)
-- `metadata/verity_header.bin` - Signed metadata (196 bytes)
-- `metadata/verity_header.sig` - PKCS7 signature (DER)
-- `metadata/verity_locator.bin` - VLOC footer (4 KiB)
-- `metadata/verity_info.txt` - Human-readable metadata
+1. Analyzes filesystem geometry.  
+2. Allocates space for hash tree.  
+3. Generates hash tree with `veritysetup`.  
+4. Builds 196-byte metadata header.  
+5. Signs header with PKCS7 (detached signature).  
+6. Writes metadata, signature, and VLOC locator to disk end.  
 
-### 3. launch_boot.sh
+**Output (under `src/build/Binaries/metadata/`):**
 
-Master orchestration script that automates the entire build and boot process.
+- `root.hash` – Root hash (hex).  
+- `verity_header.bin` – Metadata header (196 bytes).  
+- `verity_header.sig` – PKCS7 signature (DER).  
+- `verity_locator.bin` – VLOC footer (4 KiB).  
+- `verity_info.txt` – Human-readable summary.  
+
+---
+
+### 3. `build_artifacts.sh`
+
+Unified build script for preparing boot artifacts.
 
 **Workflow:**
-1. Executes `build_rootfs.sh` to create the filesystem
-2. Runs `generate_verity.sh` to generate security metadata
-3. Validates all artifacts are present
-4. Launches the bootloader with appropriate parameters
 
-**Features:**
-- Color-coded output for better readability
-- Error handling at each stage
-- Automatic cleanup on failure
-- Progress indicators
+1. Runs `build_rootfs.sh`.  
+2. Runs `generate_verity.sh`.  
+3. Verifies that `Binaries/rootfs.img` exists.  
 
-### 4. bootloader.c
+Usage:
 
-Minimal userspace QEMU launcher that:
-- Resolves absolute path to `rootfs.img`
-- Constructs QEMU command with appropriate virtio-blk configuration
-- Passes kernel parameters for dm-verity autoboot
-- Launches VM with serial console output
-
-**Kernel Command Line:**
-```
-dm_verity_autoboot.autoboot_device=/dev/vda root=/dev/dm-0 rootfstype=ext4 rootwait rootdelay=10
-```
-
-**Compilation:**
 ```bash
-cd bootloaders/
-gcc -O2 -Wall -o secondary_bootloader bootloader.c
+cd src/build/
+./build_artifacts.sh
 ```
 
-### 5. dm-verity-autoboot.c
+This script only prepares artifacts; it does **not** launch QEMU.
 
-Custom kernel module providing early-boot verification.
+---
+
+### 4. `launch_qemu.sh`
+
+QEMU launcher (replaces the older “userspace bootloader”).
+
+**Responsibilities:**
+
+- Uses `src/bootloaders/kernel_image.bin`.  
+- Attaches `Binaries/rootfs.img` as virtio-blk.  
+- Sets kernel cmdline parameters for dm-verity autoboot.
+
+Excerpt:
+
+```bash
+KERNEL="../bootloaders/kernel_image.bin"
+ROOTFS="Binaries/rootfs.img"
+
+APPEND_CMD="console=ttyS0 loglevel=7 root=/dev/dm-0 rootfstype=ext4 rootwait dm_verity_autoboot.autoboot_device=/dev/vda dm_verity_autoboot.mode=verify_and_map"
+
+exec qemu-system-x86_64   -kernel "$KERNEL"   -drive if=none,file="$ROOTFS",format=raw,id=hd0   -device virtio-blk-pci,drive=hd0   -append "$APPEND_CMD"   -m 1024M -nographic
+```
+
+You can customize RAM, CPUs, and acceleration directly in this script.
+
+---
+
+### 5. `dm-verity-autoboot.c` (orchestrator)
+
+Core early-boot helper, compiled into the kernel:
+
+- Reads kernel command line (`dm_verity_autoboot.autoboot_device` and `mode`).  
+- Resolves block device (e.g. `/dev/vda`) *without* depending on `/dev` nodes.  
+- Reads last 4 KiB of the device and distinguishes:
+  - **VERI** – attached 4 KiB footer with header + PKCS7.  
+  - **VLOC** – detached layout with locator referencing metadata + signature.  
+- For VERI:
+  - Reads and logs attached footer.  
+  - Calls `verify_signature_pkcs7_attached()`.  
+  - Validates structure via `verity_parse_metadata_header()`.  
+  - Calls `verity_create_mapping()` to build dm-verity target.  
+- For VLOC:
+  - Reads metadata and detached PKCS7 by offsets/lengths.  
+  - Calls `verify_signature_pkcs7_detached()`.  
+  - Validates structure via `verity_parse_metadata_header()`.  
+  - Calls `verity_create_mapping()`.  
+
+On failure, the helper panics the kernel in a **fail-secure** way.
+
+---
+
+### 6. `mapping.c` / `mapping.h`
+
+Responsible for building the device-mapper table and calling `dm_early_create()`.
+
+**Key tasks:**
+
+- Extracts and validates fields from `struct verity_metadata_header`.  
+- Enforces supported algorithms (`sha256` only).  
+- Computes `num_data_sectors` and hash region offsets.  
+- Converts binary `root_hash` and `salt` to ASCII hex.  
+- Assembles a dm-verity table like:
+
+  ```text
+  <version> <data_dev> <hash_dev> <data_bs> <hash_bs>   <num_blocks> <hash_start_block> <algo> <root_hex> <salt_hex>
+  ```
+
+- Calls `dm_early_create()` with a single read-only “verity_root” target.  
+
+---
+
+### 7. `metadata_parse.c` / `metadata_parse.h`
+
+Safe parsing and logging of verity metadata headers.
+
+**Responsibilities:**
+
+- Encodes root hash and salt to hex for debug logging.  
+- Computes:
+  - `covered_bytes` (approx. filesystem size).  
+  - `hash_start_bytes` for sanity checks.  
+- Logs all key fields:
+
+  - version  
+  - data/hash block sizes  
+  - `data_blocks`  
+  - `hash_start_sector`  
+  - salt size and hex salt  
+  - algorithm name  
+
+The parser is used by the orchestrator *after* signature verification to avoid parsing untrusted data.
+
+---
+
+### 8. `signature_verify.c` / `signature_verify.h`
+
+PKCS7 signature verification logic.
 
 **Capabilities:**
-- Parses kernel command line for device path
-- Detects attached (VERI) vs detached (VLOC) footer formats
-- Reads and validates PKCS7 signatures against kernel trusted keyring
-- Creates dm-verity mapping via `dm_early_create()`
-- Comprehensive logging for debugging
 
-**Security Properties:**
-- Verifies signature before any data access
-- Uses kernel's built-in PKCS7 verification
-- Panics on verification failure (fail-secure)
-- No userspace dependencies
-- Supports both 196-byte header and full 4K footer layouts
+- `verify_signature_pkcs7_attached()`:
+  - Computes SHA-256 over the first 196 bytes of the footer.
+  - Parses attached PKCS7 blob from the footer.
+  - Verifies the PKCS7 using the kernel trusted keyring.
+  - Extracts the digest from the PKCS7 and compares against local digest.
 
-### 6. corrupt_rootfs.sh
+- `verify_signature_pkcs7_detached()`:
+  - Computes SHA-256 over the detached metadata region.  
+  - Parses detached PKCS7 buffer.  
+  - Supplies metadata as associated data.  
+  - Verifies signature and digest equality.  
 
-Testing utility to validate tamper detection mechanisms.
+Both helpers return `0` on success or a negative errno (`-EKEYREJECTED`, `-EINVAL`, etc.) on failure.
+
+---
+
+### 9. `integrity_tests.sh`
+
+Robustness and fuzz-testing suite for dm-verity metadata.
 
 **Purpose:**
-Intentionally corrupts the disk image to verify that the dm-verity system correctly detects and rejects modified filesystems.
 
-**Usage:**
-```bash
-# Corrupt metadata header (creates copy)
-./corrupt_rootfs.sh meta1
+- Systematically corrupts verity structures to test:
+  - Input sanitization and bounds checking.  
+  - Integer overflow protection.  
+  - Buffer overflow prevention.  
+  - Error handling for malformed on-disk structures.  
 
-# Corrupt PKCS7 signature (creates copy)
-./corrupt_rootfs.sh sig1
+**Typical workflow:**
 
-# Corrupt in-place (affects actual boot image)
-./corrupt_rootfs.sh meta1 --inplace
+1. Create a test image:
 
-# Specify custom image path
-./corrupt_rootfs.sh sig1 /path/to/custom.img
-```
+   ```bash
+   cd src/build/
+   ./integrity_tests.sh <mode>
+   ```
 
-**Corruption Modes:**
+2. Boot the kernel under QEMU:
 
-| Mode | Target | Effect | Expected Result |
-|------|--------|--------|-----------------|
-| `meta1` | Metadata header | Flips 1 byte at META_OFFSET+64 | Signature verification fails; kernel panics |
-| `sig1` | PKCS7 signature | Flips 1 byte at SIG_OFFSET | PKCS7 parsing fails; kernel panics |
+   ```bash
+   ./launch_qemu.sh
+   ```
 
-**Output:**
-- Default: Creates `rootfs.bad.img` (preserves original)
-- With `--inplace`: Modifies `rootfs.img` directly (for testing boot failure)
+3. Use the default image or, if `integrity_tests.sh` created a `rootfs.<mode>.test.img`, adjust your launch script / menu accordingly.  
+4. Observe kernel logs for expected failures (verification errors, bounds rejections, etc.).
 
-**Workflow for Testing:**
-```bash
-# 1. Build clean system
-cd build/
-./launch_boot.sh   # Should boot successfully
+**Supported modes:**
 
-# 2. Corrupt the image
-./corrupt_rootfs.sh meta1 --inplace
+| Mode         | What it corrupts                                          | Intention                                             |
+|--------------|-----------------------------------------------------------|-------------------------------------------------------|
+| `meta1`      | Flips one byte in the 196-byte header                    | Tests header integrity & digest mismatch detection    |
+| `sig1`       | Flips one byte in PKCS7 signature blob                   | Tests PKCS7 parsing and cryptographic verification    |
+| `int_overflow` | Writes wrap-around values into locator fields          | Tests 32/64-bit overflow handling in offset math      |
+| `buf_overflow` | Sets metadata length to `0xFFFFFFFF`                   | Tests allocation limits and buffer size validation    |
+| `trunc_meta` | Claims metadata extends beyond disk capacity             | Tests truncated reads and bounds checks               |
+| `bad_offsets`| Places meta/sig offsets well beyond disk end             | Tests rejection of out-of-bounds offsets              |
+| `sanitize`   | Replaces locator with random garbage                     | Tests magic validation and general input sanitization |
 
-# 3. Attempt to boot (should fail)
-cd ../bootloaders/
-sudo ./secondary_bootloader
+**Key options:**
 
-# Expected: Kernel panic with message:
-# "dm-verity-autoboot: signature verification FAILED"
+- `--inplace` – Corrupt the original `rootfs.img` (destructive).  
+- `--backup` – Create a `.bak` backup when using `--inplace`.  
+- `--dry-run` – Print actions without modifying the image.  
+- `--verbose` – Extra debug output.  
+- `--restore` – Restore from previously created `.bak` backup.  
 
-# 4. Restore clean image
-cd ../build/
-./launch_boot.sh  # Regenerate metadata
-```
+---
 
 ## Usage
 
-### Quick Start
+### 1. Generate Signing Keys (one-time)
 
-1. **Generate signing keys** (one-time setup):
 ```bash
-cd boot/
-# Generate private key
+cd src/boot/
+
+# Private key
 openssl genrsa -out bl_private.pem 2048
 
-# Generate self-signed certificate
-openssl req -new -x509 -key bl_private.pem -out bl_cert.pem -days 3650 \
-    -subj "/C=US/ST=State/L=City/O=Organization/CN=SecureBoot"
+# Self-signed certificate
+openssl req -new -x509 -key bl_private.pem -out bl_cert.pem -days 3650     -subj "/C=US/ST=State/L=City/O=Organization/CN=SecureBoot"
 ```
 
-2. **Build and launch system**:
-```bash
-cd build/
-./launch_boot.sh
-```
+Ensure the certificate is built into or enrolled in the kernel trusted keyring.
 
-This master script automatically:
-- Builds the root filesystem
-- Generates dm-verity metadata and signatures
-- Launches the bootloader
-- Boots into the verified system
+---
 
-### Manual Workflow
-
-For step-by-step execution or debugging:
+### 2. Quick Start: Build & Boot
 
 ```bash
-# Step 1: Build rootfs
-cd build/
-./build_rootfs.sh
+# From repository root
+cd src/build/
 
-# Step 2: Generate dm-verity metadata
-./generate_verity.sh
+# Build rootfs + dm-verity metadata
+./build_artifacts.sh
 
-# Step 3: Launch bootloader
-cd ../bootloaders/
-sudo ./secondary_bootloader
+# Boot in QEMU
+./launch_qemu.sh
 ```
 
-### Testing Tamper Detection
+---
+
+### 3. Running Integrity Tests
+
+Example: corrupt the metadata header in a **copy** of the image.
 
 ```bash
-# 1. Verify clean boot works
-cd build/
-./launch_boot.sh
-# (should boot successfully)
+cd src/build/
 
-# 2. Create corrupted copy
-./corrupt_rootfs.sh meta1 --inplace
-# This creates rootfs.bad.img
+# Create rootfs.meta1.test.img and corrupt its header
+./integrity_tests.sh meta1
 
-# 3. Attempt boot (should fail)
-cd ../bootloaders/
-sudo ./secondary_bootloader
-# Expected: Kernel panic due to signature verification failure
-
-# 5. Restore clean image
-cd build/
-./launch_boot.sh
+# Boot (adjust launch script or menu to use the test image)
+./launch_qemu.sh
 ```
 
-### Verification
+Example: in-place corruption with automatic backup:
 
-During boot, monitor the serial console for verification messages:
-
+```bash
+./integrity_tests.sh sig1 --inplace --backup --yes
+./launch_qemu.sh
 ```
+
+---
+
+## Verification During Boot
+
+Watch QEMU console output:
+
+```text
 [    2.345] verity-autoboot: Footer mode: detached (VLOC)
 [    2.367] verity-autoboot: Signature verification PASSED (detached)
-[    2.389] verity-autoboot: ✓ dm-verity mapping created: name="verity_root"
+[    2.389] verity-mapping: dm-verity mapping created successfully
 [    2.421] EXT4-fs (dm-0): mounted filesystem with ordered data mode
 ```
 
-**Successful Boot Indicators:**
-- "Signature verification PASSED"
-- "dm-verity mapping created"
-- "EXT4-fs (dm-0): mounted"
-- Login prompt appears
+**Success indicators:**
 
-**Failed Boot Indicators:**
-- "signature verification FAILED"
-- "digest mismatch"
-- "signer NOT trusted"
-- Kernel panic message
+- `Signature verification PASSED (attached/detached)`  
+- `dm-verity mapping created successfully`  
+- `EXT4-fs (dm-0): mounted`  
+- Regular login prompt appears.  
+
+**Failure indicators (expected during fuzz tests):**
+
+- `signature verification FAILED`  
+- `metadata header validation FAILED`  
+- `unknown tail magic` / `invalid VLOC magic`  
+- `dm-verity mapping creation FAILED`  
+- Kernel panic with `dm-verity-autoboot` message.  
+
+---
 
 ## Configuration
 
-### Adjusting Disk Size
+### Disk Size Tuning
 
-The build script automatically calculates disk size based on filesystem content plus 20% overhead. To manually adjust:
+In `src/build/build_rootfs.sh`:
 
 ```bash
-# In build_rootfs.sh, modify:
-VERITY_SPACE_MB=$((ROOTFS_SIZE_MB / 5 + 20))  # Change multiplier or constant
+VERITY_SPACE_MB=$((ROOTFS_SIZE_MB / 5 + 20))
 DISK_SIZE_MB=$((ROOTFS_SIZE_MB + VERITY_SPACE_MB))
 ```
 
+Adjust the formula to increase or reduce space reserved for the Merkle tree and metadata.
+
 ### Kernel Parameters
 
-Modify `bootloader.c` to adjust:
-- Console output: `console=ttyS0,115200`
-- Log level: `loglevel=7` (7=debug, 4=warning, 1=error)
-- Root device wait time: `rootdelay=10`
-- Memory allocation: `-m 1024` (in QEMU args)
+Modify `APPEND_CMD` in `launch_qemu.sh`:
+
+- `console=ttyS0,115200` – Serial console.  
+- `loglevel=7` – Verbosity (debug).  
+- `rootdelay=10` – Wait for root device.  
+- `dm_verity_autoboot.autoboot_device=/dev/vda` – Device to scan.  
+- `dm_verity_autoboot.mode=verify_and_map` – Helper behavior.  
 
 ### QEMU Configuration
 
-Edit `bootloader.c` QEMU arguments:
-```c
-"-m", "1024",                    // RAM (increase for larger workloads)
-"-machine", "q35,accel=tcg",     // Change to accel=kvm for better performance
-"-cpu", "max",                   // CPU model
-"-smp", "2",                     // Add for multi-core (not in default)
+Also in `launch_qemu.sh`, you can adjust:
+
+```bash
+-m 1024M              # RAM
+-machine q35,accel=tcg
+-cpu max
+-smp 2                # Number of vCPUs
 ```
+
+Switch to `accel=kvm` if KVM is available.
+
+---
 
 ## Security Considerations
 
 ### Key Management
 
-- **Private key (`bl_private.pem`)**: Keep secure; compromise allows arbitrary filesystem signing
-- **Certificate (`bl_cert.pem`)**: Must be enrolled in kernel trusted keyring
-- For production: Use hardware security modules (HSM) for key storage
-- Consider key rotation policy (recommended: annually)
+- Keep `bl_private.pem` secret (restrict permissions, consider encryption).  
+- Embed `bl_cert.pem` into the kernel trusted keyring.  
+- For production, use HSMs or dedicated key management.  
+- Plan for regular key rotation and certificate expiry.  
 
+### Threat Model (Covered)
 
-### Threat Model
+- Unauthorized filesystem modification.  
+- Offline tampering with disk images.  
+- Hash tree corruption or replacement.  
+- Locator/metadata manipulation to redirect hash tree.  
 
-**Protected Against:**
-- Unauthorized filesystem modifications
-- Malicious root filesystem injection
-- Boot-time tampering
-- Offline disk image modification
-- Hash tree corruption
-- Metadata manipulation
+The integrity test suite is specifically designed to validate that the implementation **fails closed** under all of these attack classes.
 
+---
 
-## Appendix A: File Format Specifications
+## Appendices
 
-### VLOC Footer Format (4096 bytes)
+### A. VLOC Footer Format (4096 bytes)
 
-```
+```text
 Offset  Size  Field           Description
 ------  ----  -----           -----------
 0x0000  4     magic           0x564C4F43 ("VLOC")
@@ -438,9 +561,9 @@ Offset  Size  Field           Description
 0x0020  4064  reserved        Zero-filled padding
 ```
 
-### Metadata Header Format (196 bytes)
+### B. Metadata Header Format (196 bytes)
 
-```
+```text
 Offset  Size  Field             Description
 ------  ----  -----             -----------
 0x00    4     magic             0x56455249 ("VERI")
@@ -455,91 +578,15 @@ Offset  Size  Field             Description
 0xC0    4     salt_size         Actual salt length (bytes)
 ```
 
-## Appendix B: Kernel Module Parameters
+### C. Kernel Module Parameters
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| autoboot_device | string | NULL | Block device path (e.g., /dev/vda) |
+| Parameter        | Type   | Example              | Description                                  |
+|------------------|--------|----------------------|----------------------------------------------|
+| `autoboot_device`| string | `/dev/vda`           | Whole-disk block device with verity footer   |
+| `mode`           | string | `verify_and_map`     | Behavior (verification + mapping)            |
 
-Usage:
-```bash
-# In kernel command line
-dm_verity_autoboot.autoboot_device=/dev/vda
+Example on cmdline:
 
-# Or via modprobe (if built as module)
-modprobe dm-verity-autoboot autoboot_device=/dev/sda
+```text
+dm_verity_autoboot.autoboot_device=/dev/vda dm_verity_autoboot.mode=verify_and_map
 ```
-
-## Appendix C: Build Time Estimates
-
-Based on reference hardware (Intel i5-8250U, 8GB RAM, SSD):
-
-| Operation | Time | Notes |
-|-----------|------|-------|
-| debootstrap | 3-5 minutes | Network dependent |
-| mkfs.ext4 | 2-5 seconds | Size dependent |
-| File copy (rsync) | 30-60 seconds | ~1GB of data |
-| veritysetup format | 10-30 seconds | CPU intensive |
-| PKCS7 signing | <1 second | RSA operations |
-| Total (clean build) | 5-8 minutes | First run |
-| Total (incremental) | 30-60 seconds | Metadata only |
-
-## Appendix D: Disk Space Requirements
-
-For a typical deployment:
-
-| Component | Size | Description |
-|-----------|------|-------------|
-| Base Debian | 400-600 MB | Minimal system |
-| Packages | 200-400 MB | Depends on selection |
-| Hash tree | 5-10% | ~50 MB for 1 GB data |
-| Metadata | 4 KB | Header (196B) + padding |
-| Signature | 1-2 KB | PKCS7 DER (padded to 4KB) |
-| Locator | 4 KB | VLOC footer |
-| **Total disk** | **~750 MB** | For minimal system |
-
-## Appendix E: Security Checklist
-
-Pre-deployment security verification:
-
-- [ ] Private key stored securely (chmod 600, encrypted storage)
-- [ ] Certificate embedded in kernel trusted keyring
-- [ ] Root filesystem is read-only (no write access)
-- [ ] Signature verification logs to remote syslog
-- [ ] Boot process monitored for anomalies
-- [ ] Incident response plan documented
-- [ ] Key rotation schedule established
-- [ ] Backup/recovery procedures tested
-- [ ] Corruption test performed successfully
-- [ ] Boot time within acceptable limits
-- [ ] All dependencies up to date (apt update/upgrade)
-- [ ] Compliance requirements documented
-
-## Updates and Patches
-
-To update the system:
-
-1. **Update packages**:
-   ```bash
-   sudo apt update && sudo apt upgrade
-   ```
-
-2. **Rebuild filesystem**:
-   ```bash
-   cd build/
-   ./build_rootfs.sh
-   ./generate_verity.sh
-   ```
-
-3. **Test thoroughly**:
-   ```bash
-   # Clean boot
-   ./launch_boot.sh
-   
-   # Corruption detection
-   ./corrupt_rootfs.sh meta1
-   mv Binaries/rootfs.img Binaries/rootfs.clean.img
-   mv Binaries/rootfs.bad.img Binaries/rootfs.img
-   cd ../bootloaders/
-   sudo ./secondary_bootloader  # Should fail
-   ```
