@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+set -u  # treat unset vars as an error
+
+# ==================================================================
 # Minimal userspace bootloader for the dm-verity demo.
 #
 # Responsibilities:
@@ -13,8 +16,6 @@
 # All security logic (dm-verity tree, detached PKCS7 verification,
 # dm-verity mapping creation, and mounting the verified rootfs) happens
 # entirely inside the kernel.
-
-set -u  # treat unset vars as an error
 
 IMG_REL="../build/Binaries/rootfs.img"
 

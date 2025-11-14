@@ -1,8 +1,8 @@
 #!/bin/bash
 set -eo pipefail
 
-# QEMU System Launcher
 # ==================================================================
+# QEMU System Launcher
 #
 # Purpose: Boots Linux kernel with dm-verity enabled root filesystem
 #

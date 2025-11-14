@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# dm-verity Parser Fuzz Testing & Robustness Validation Suite
 # ===========================================================
+# dm-verity Parser Fuzz Testing & Robustness Validation Suite
 #
 # Purpose: Validates kernel dm-verity implementation against malicious/corrupted metadata
 # 
