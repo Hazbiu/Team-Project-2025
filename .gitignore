@@ -1,5 +1,40 @@
-/legecy
-# Ignore generated root filesystem
+# Legacy paths
 src/build/Binaries/rootfs/
 src/build/Binaries/rootfs.img
-src/build/Binaries/metadata/src/build/Binaries/kernel_image.bin
+src/build/Binaries/metadata/
+src/build/Binaries/kernel_image.bin
+
+# dm-verity Test Images and Generated Files
+# Root filesystem images
+Binaries/rootfs.img
+Binaries/rootfs.*.test.img
+
+# Test corruption images
+rootfs.*.test.img
+
+# Backup files from in-place modifications
+*.bak
+Binaries/*.bak
+
+# dm-verity metadata directory
+Binaries/metadata/
+
+# Temporary files and build artifacts
+*.tmp
+*.temp
+*.log
+build/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+
+# Loop device related (if any tracking files exist)
+*.loop
+
+# Offset files generated during testing
+layout_offsets.sh
+
+# QEMU related artifacts (if any)
+qemu-*
+*.qcow2
