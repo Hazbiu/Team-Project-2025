@@ -1,5 +1,6 @@
 #!/bin/bash
-#
+set -eo pipefail
+
 # QEMU System Launcher
 # ==================================================================
 #
@@ -26,8 +27,6 @@
 # The script automatically detects all available test images and presents
 # them in a numbered menu for easy selection.
 #
-
-set -eo pipefail
 
 # Colors for better readability
 GREEN='\033[0;32m'

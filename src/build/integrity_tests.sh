@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-#
+set -euo pipefail
+
 # dm-verity Parser Fuzz Testing & Robustness Validation Suite
 # ===========================================================
 #
@@ -22,8 +23,6 @@
 # Each test mode targets specific vulnerability classes per Linux kernel security
 # requirements for device-mapper and integrity verification subsystems.
 #
-
-set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMG_DEFAULT="$SCRIPT_DIR/Binaries/rootfs.img"
