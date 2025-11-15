@@ -37,9 +37,8 @@ sudo systemctl restart docker
 echo "=== Adding current user to docker group ==="
 sudo usermod -aG docker $USER
 
-echo "=== Testing Docker with hello-world ==="
-docker run hello-world
-
 echo ""
 echo "=== Docker installation complete! ==="
 echo "If this is your first run, log out & log back in to use docker without sudo."
+echo "=== Rebooting system now ==="
+sudo reboot
