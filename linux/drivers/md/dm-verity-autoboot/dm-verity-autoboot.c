@@ -1,32 +1,34 @@
-// SPDX-License-Identifier: GPL-2.0-only
-/*
- * dm-verity-autoboot.c
+/**
+ * @file dm-verity-autoboot.c
+ * @author Team A
+ * @brief Early boot dm-verity automation for whole-disk verified rootfs.
  *
- * Built-in helper for early-boot dm-verity on a whole-disk image.
+ * This build-in module runs early during boot and automatically sets up a
+ * dm-verity protected root filesystem. It performs the following steps:
  *
- * Boot flow overview:
+ *   • Reads the kernel command-line parameter that specifies the disk device
+ *     (for example: dm_verity_autoboot.autoboot_device=/dev/vda)
  *
- *   Bootloader:
- *     - Passes the whole-disk device path via kernel cmdline:
+ *   • Reads the last 4 KB of that device to locate the dm-verity footer,
  *
- *         dm_verity_autoboot.autoboot_device=/dev/vda
- *         root=/dev/dm-0 rootfstype=ext4 rootwait ...
+ *   • Supports both footer layouts:
+ *        - "VERI"  → attached metadata + signature stored entirely in the footer.
+ *        - "VLOC"  → detached layout with metadata and signature stored elsewhere.
  *
- *   This module:
- *     1. Resolves the block device for autoboot_device (e.g. /dev/vda)
- *     2. Reads the last 4 KiB of the device
- *     3. Distinguishes:
- *          - Attached footer ("VERI"): 4 KiB footer = header + PKCS7
- *          - Detached footer ("VLOC"): footer is a locator pointing to:
- *                [ ... data ... ][hash tree][header][signature][locator]
- *     4. Verifies a PKCS7 signature (using the kernel trusted keyring)
- *        over the 196-byte metadata header.
- *     5. Uses dm_early_create() to create a dm-verity mapping:
- *            name="verity_root"  → typically /dev/dm-0
- *   Core kernel:
- *     - Mounts /dev/dm-0 as the ext4 root filesystem.
+ *   • Verifies the PKCS7 signature using the kernel’s trusted keyring.
+ *
+ *   • Validates the dm-verity metadata header (block sizes, root hash,
+ *     hash tree position, salt, algorithm, etc.)
+ *
+ *   • Creates the dm-verity mapping using dm_early_create(), which becomes
+ *     the verified root device (/dev/dm-0).
+ *
+ * @version 0.1
+ * @date 2025-11-15
+ * 
+ * @copyright Copyright (c) 2025
+ * 
  */
-
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -59,14 +61,21 @@
 #define VERITY_PKCS7_MAX           2048
 #define VLOC_MAGIC                 0x564C4F43 /* "VLOC" */
 
+/**
+ * @brief Kernel module parameter specifying the whole disk device.
+ * 
+ */
 static char *autoboot_device;
 module_param(autoboot_device, charp, 0);
 MODULE_PARM_DESC(autoboot_device,
 	"Whole-disk block dev (e.g. /dev/vda) containing verity metadata+locator");
 
-/*
- * Full attached 4K footer ("VERI"):
- *   [header (196 bytes)] [salt_size/pkcs7_size] [PKCS7 DER] [padding]
+
+/**
+ * @brief Layout of a full attached 4 KiB dm-verity metadata footer.
+ * 
+ * This footer resides at the last 4096 bytes of the disk when "VERI"-style
+ * attached metadata is used.
  */
 struct verity_metadata_ondisk {
 	__le32 magic;
@@ -84,10 +93,11 @@ struct verity_metadata_ondisk {
 	u8     reserved[4096 - 2248];
 } __packed;
 
-/*
- * Detached locator footer ("VLOC"), always at the last 4 KiB:
- *   - meta_off/meta_len: header region (196 bytes, padded to 4K)
- *   - sig_off/sig_len  : PKCS7 (DER) region
+
+/**
+ * @brief  Locator footer for detached metadata/signature ("VLOC").
+ * 
+ * Located at the final 4 KiB of the device.
  */
 struct verity_footer_locator {
 	__le32 magic;
@@ -99,8 +109,15 @@ struct verity_footer_locator {
 	u8     reserved[4096 - 32];
 } __packed;
 
-/* --- helpers & logging --- */
 
+/**
+ * @brief Log up to `max_show` bytes of a buffer in hex.
+ * 
+ * @param tag Human-readable prefix string.
+ * @param buf Pointer to buffer.
+ * @param len Total number of bytes in buffer.
+ * @param max_show The maximum number of bytes to print from the buffer.
+ */
 static void dump_hex_short(const char *tag, const u8 *buf, size_t len, size_t max_show)
 {
 	size_t i, show = (len < max_show) ? len : max_show;
@@ -113,6 +130,14 @@ static void dump_hex_short(const char *tag, const u8 *buf, size_t len, size_t ma
 	pr_cont("\n");
 }
 
+/**
+ * @brief 
+ * 
+ * @param buf Pointer to buffer.
+ * @param len Data length.
+ * @param digest Output 32-byte digest.
+ * @return 0 on success, negative error code on failure.
+ */
 static int sha256_buf(const u8 *buf, size_t len, u8 digest[32])
 {
 	struct crypto_shash *tfm;
@@ -144,15 +169,29 @@ out:
 	return ret;
 }
 
-/* Compute SHA-256 over the first VERITY_FOOTER_SIGNED_LEN bytes of the footer */
+
+/**
+ * @brief Compute SHA-256 of the first 196 bytes of an attached footer.
+ * 
+ * @param meta Pointer to metadata footer structure.
+ * @param digest Output digest buffer.
+ * @return 0 on success, negative error code.
+ */
 static int compute_footer_digest(const struct verity_metadata_ondisk *meta,
 				 u8 digest[32])
 {
 	return sha256_buf((const u8 *)meta, VERITY_FOOTER_SIGNED_LEN, digest);
 }
 
-/*
- * Read an arbitrary region (meta or sig) from the block device file.
+
+/**
+ * @brief Read an arbitrary disk region.
+ * 
+ * @param bdev_file File handle for underlying block device.
+ * @param off Offset in bytes.
+ * @param len Number of bytes to read.
+ * @param out Output pointer holding newly allocated buffer.
+ * @return 0 on success, negative error code.
  */
 static int read_region(struct file *bdev_file, u64 off, u32 len, u8 **out)
 {
@@ -177,9 +216,12 @@ static int read_region(struct file *bdev_file, u64 off, u32 len, u8 **out)
 	return 0;
 }
 
-/*
- * Resolve "/dev/vda" or "vda" to a dev_t by matching gendisk->disk_name.
- * This does NOT depend on /dev/ nodes existing, so it works early in boot.
+/**
+ * @brief Resolve a device name.
+ * 
+ * @param path Device path.
+ * @param out_dev Output device identifier.
+ * @return 0 on success, -ENODEV if not found.
  */
 static int resolve_dev_from_diskname(const char *path, dev_t *out_dev)
 {
@@ -206,7 +248,13 @@ static int resolve_dev_from_diskname(const char *path, dev_t *out_dev)
 	return -ENODEV;
 }
 
-/* ----- read attached footer ----- */
+/**
+ * @brief Read and validate a "VERI" attached metadata footer.
+ * 
+ * @param f File pointer for block device.
+ * @param meta Output metadata buffer.
+ * @return 0 on success, negative error code on failure.
+ */
 static int read_metadata_footer_attached(struct file *f,
 				struct verity_metadata_ondisk *meta)
 {
@@ -243,9 +291,20 @@ static int read_metadata_footer_attached(struct file *f,
 }
 
 
-
-/* ----- main worker: verify & create mapping ----- */
-
+/**
+ * @brief This function verifies signature and create dm-verity mapping.
+ * 
+ * Steps:
+ *  1. Resolve device
+ *  2. Detect footer format ("VERI" or "VLOC")
+ *  3. Perform metadata/sig region validation
+ *  4. Verify PKCS7 signature
+ *  5. Validate metadata header
+ *  6. Call verity_create_mapping()
+ *
+ * @return 0 on success, negative error code on failure.
+ * @note On signature failure, the kernel panics.
+ */
 static int verity_autoboot_main(void)
 {
 	struct file *bdev_file;
@@ -283,7 +342,7 @@ static int verity_autoboot_main(void)
 		return PTR_ERR(bdev_file);
 	}
 
-	/* Peek last 4 KiB to detect attached vs detached footer layout */
+	
 	{
 		u8 tail[VERITY_META_SIZE];
 		loff_t sz = i_size_read(file_inode(bdev_file));
@@ -337,7 +396,7 @@ static int verity_autoboot_main(void)
 
 				h = (const struct verity_metadata_header *)meta;
 
-				//Validate + log metadata fields using separated logic */
+				
 				ret = verity_parse_metadata_header(h);
 				if (ret) {
 					kfree(meta);
@@ -425,7 +484,7 @@ static int verity_autoboot_main(void)
 
 				meta_end = le64_to_cpu(loc.meta_off) + le32_to_cpu(loc.meta_len);
 				if (meta_end < le64_to_cpu(loc.meta_off)) {
-					// This detects overflow
+					
 					pr_emerg("%s: VALIDATION FAILED: meta region overflow (meta_off + meta_len wraps around)\n",
 						DM_MSG_PREFIX);
 					fput(bdev_file);
@@ -460,7 +519,7 @@ static int verity_autoboot_main(void)
 				
 				sig_end = le64_to_cpu(loc.sig_off) + le32_to_cpu(loc.sig_len);
 				if (sig_end < le64_to_cpu(loc.sig_off)) {
-					// This detects overflow
+					
 					pr_emerg("%s: VALIDATION FAILED: sig region overflow (sig_off + sig_len wraps around)\n",
 						DM_MSG_PREFIX);
 					fput(bdev_file);
@@ -521,7 +580,6 @@ static int verity_autoboot_main(void)
 
 				h = (const struct verity_metadata_header *)meta_buf;
 
-				/* NEW: Validate + log metadata fields */
 				ret = verity_parse_metadata_header(h);
 				if (ret) {
 					kfree(sig_buf);
@@ -563,16 +621,31 @@ static int verity_autoboot_main(void)
 	}
 }
 
-/* delayed work trampoline */
+/**
+ * @brief Workqueue wrapper that simply calls verity_autoboot_main().
+ * 
+ * @param work Work structure.
+ */
 static void verity_autoboot_workfn(struct work_struct *work)
 {
 	verity_autoboot_main();
 }
+
+/**
+ * @brief Construct a new declare delayed work object.
+ * 
+ */
 static DECLARE_DELAYED_WORK(verity_work, verity_autoboot_workfn);
 
-/*
- * init: print cmdline + param, then schedule the verification/mapping worker
- * a bit later so that the block device (virtio-blk, etc.) has time to appear.
+
+/**
+ * @brief Initialization function for dm-verity-autoboot.
+ * 
+ * This runs late in the boot process and:
+ *   - Prints the kernel command line
+ *   - Checks whether the autoboot_device parameter was provided
+ *   - Schedules the workqueue that performs dm-verity verification and mapping.
+ * @return 0
  */
 static int __init dm_verity_autoboot_init(void)
 {
@@ -611,13 +684,20 @@ static int __init dm_verity_autoboot_init(void)
 	return 0;
 }
 
+/**
+ * @brief Cleanup function for dm-verity-autoboot.
+ * 
+ * Cancels the delayed workqueue job before the module unloads.
+ */
 static void __exit dm_verity_autoboot_exit(void)
 {
 	cancel_delayed_work_sync(&verity_work);
 	pr_info("%s: module exit\n", DM_MSG_PREFIX);
 }
 
+
 late_initcall(dm_verity_autoboot_init);
+
 module_exit(dm_verity_autoboot_exit);
 
 MODULE_LICENSE("GPL");
