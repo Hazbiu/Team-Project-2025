@@ -1,24 +1,74 @@
-FROM ubuntu:24.04
+FROM debian:bookworm
 
-# Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Update & install packages
+# -----------------------------------------------------------
+# Install required packages (full set)
+# -----------------------------------------------------------
 RUN apt-get update && apt-get install -y \
-    build-essential pkg-config git \
-    libssl-dev openssl \
-    qemu-system-x86 qemu-utils \
-    libncurses-dev flex bison libelf-dev libudev-dev \
-    libpci-dev libiberty-dev liblz4-tool zstd cpio \
-    initramfs-tools busybox \
-    gdb strace xxd \
-    && rm -rf /var/lib/apt/lists/*
-    
-# Create working directory
+    sudo \
+    qemu-utils \
+    qemu-system-x86 \
+    qemu-kvm \
+    debootstrap \
+    cryptsetup \
+    kmod \
+    e2fsprogs \
+    rsync \
+    openssl \
+    python3 \
+    python3-pip \
+    ca-certificates \
+    coreutils \
+    xxd \
+    util-linux \
+    squashfs-tools \
+    dosfstools \
+    systemd \
+    file \
+    vim \
+    git \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# -----------------------------------------------------------
+# Workspace inside container
+# -----------------------------------------------------------
 WORKDIR /workspace
 
-# Copy project files into container
+# -----------------------------------------------------------
+# Copy project files from host into container
+# -----------------------------------------------------------
 COPY . /workspace
 
-# Default command: open shell
+# -----------------------------------------------------------
+# Ensure bzImage is copied correctly to /boot
+# -----------------------------------------------------------
+RUN mkdir -p /workspace/boot && \
+    if [ -f "/workspace/bootloaders/bzImage" ]; then \
+        cp /workspace/bootloaders/bzImage /workspace/boot/bzImage; \
+    else \
+        echo "WARNING: bzImage not found in bootloaders/"; \
+    fi
+
+# -----------------------------------------------------------
+# Ensure build scripts are executable
+# -----------------------------------------------------------
+RUN chmod +x /workspace/build/*.sh || true
+
+# -----------------------------------------------------------
+# Fix permissions (rootfs folder sometimes gets root-owned)
+# -----------------------------------------------------------
+RUN chmod -R a+rwX /workspace || true
+
+# -----------------------------------------------------------
+# Print info message
+# -----------------------------------------------------------
+RUN echo "==================================================" && \
+    echo " SECURE OS BUILDER - DOCKER IMAGE READY" && \
+    echo " Inside the container you can run:" && \
+    echo "   cd /workspace/build" && \
+    echo "   ./build_artifacts.sh" && \
+    echo "   ./launch_qemu.sh" && \
+    echo "=================================================="
+
 CMD ["/bin/bash"]

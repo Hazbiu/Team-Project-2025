@@ -104,7 +104,7 @@ echo "[3/4] Sizing disk image and creating single ext4 filesystem..."
 
 # Ensure we have write permissions to the output directory
 sudo mkdir -p "$(dirname "$OUTPUT_IMG")"
-sudo chown -R "$USER:$USER" "$(dirname "$OUTPUT_IMG")"
+sudo chown -R $(id -u):$(id -g) "$(dirname "$OUTPUT_IMG")"
 
 # Estimate space for actual files
 ROOTFS_SIZE_MB=$(sudo du -s --block-size=1M "$ROOTFS_DIR" 2>/dev/null | awk '{print int($1*1.2)+100}')
@@ -145,7 +145,8 @@ sync
 sudo umount "$TEMP_MOUNT"
 sudo rmdir "$TEMP_MOUNT"
 
-sudo chown -R "$USER:$USER" "$ROOTFS_DIR"
+sudo chown -R $(id -u):$(id -g) "$ROOTFS_DIR"
+
 
 echo
 echo "========================================"
