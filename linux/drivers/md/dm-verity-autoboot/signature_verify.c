@@ -20,7 +20,7 @@
 #include <crypto/hash_info.h>
 #include <linux/verification.h>
 #include "signature_verify.h"
-#include "dm-verity-autoboot.c" 
+#include "dm-verity-autoboot.h" 
 
 #define DM_MSG_PREFIX              "verity-autoboot"
 #define VERITY_FOOTER_SIGNED_LEN   196

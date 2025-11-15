@@ -51,6 +51,8 @@
 #include "signature_verify.h"
 #include "metadata_parse.h"
 #include "mapping.h"
+#include "dm-verity-autoboot.h"
+
 
 
 #define DM_MSG_PREFIX              "verity-autoboot"
@@ -69,45 +71,6 @@ static char *autoboot_device;
 module_param(autoboot_device, charp, 0);
 MODULE_PARM_DESC(autoboot_device,
 	"Whole-disk block dev (e.g. /dev/vda) containing verity metadata+locator");
-
-
-/**
- * @brief Layout of a full attached 4 KiB dm-verity metadata footer.
- * 
- * This footer resides at the last 4096 bytes of the disk when "VERI"-style
- * attached metadata is used.
- */
-struct verity_metadata_ondisk {
-	__le32 magic;
-	__le32 version;
-	__le64 data_blocks;
-	__le64 hash_start_sector;
-	__le32 data_block_size;
-	__le32 hash_block_size;
-	char   hash_algorithm[32];
-	u8     root_hash[64];
-	u8     salt[64];
-	__le32 salt_size;
-	__le32 pkcs7_size;
-	u8     pkcs7_blob[2048];
-	u8     reserved[4096 - 2248];
-} __packed;
-
-
-/**
- * @brief  Locator footer for detached metadata/signature ("VLOC").
- * 
- * Located at the final 4 KiB of the device.
- */
-struct verity_footer_locator {
-	__le32 magic;
-	__le32 version;
-	__le64 meta_off;
-	__le32 meta_len;
-	__le64 sig_off;
-	__le32 sig_len;
-	u8     reserved[4096 - 32];
-} __packed;
 
 
 /**
@@ -138,7 +101,7 @@ static void dump_hex_short(const char *tag, const u8 *buf, size_t len, size_t ma
  * @param digest Output 32-byte digest.
  * @return 0 on success, negative error code on failure.
  */
-static int sha256_buf(const u8 *buf, size_t len, u8 digest[32])
+int sha256_buf(const u8 *buf, size_t len, u8 digest[32])
 {
 	struct crypto_shash *tfm;
 	struct shash_desc *desc;
@@ -177,7 +140,7 @@ out:
  * @param digest Output digest buffer.
  * @return 0 on success, negative error code.
  */
-static int compute_footer_digest(const struct verity_metadata_ondisk *meta,
+int compute_footer_digest(const struct verity_metadata_ondisk *meta,
 				 u8 digest[32])
 {
 	return sha256_buf((const u8 *)meta, VERITY_FOOTER_SIGNED_LEN, digest);
@@ -702,4 +665,4 @@ module_exit(dm_verity_autoboot_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("dm-verity autoboot: verify PKCS7 + create dm-verity mapping");
-MODULE_AUTHOR("team A");
+MODULE_AUTHOR("Team A");
