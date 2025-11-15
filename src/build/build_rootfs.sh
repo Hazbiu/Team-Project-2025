@@ -23,7 +23,7 @@ echo "========================================"
 BUILD_DIR="$(cd "$(dirname "$0")" && pwd)"      # Working script location
 ROOTFS_DIR="$BUILD_DIR/Binaries/rootfs"         # Location of rootfs (root filesystem tree)
 OUTPUT_IMG="$BUILD_DIR/Binaries/rootfs.img"     # Final disk image
-TEMP_MOUNT="$BUILD_DIR/mnt-temp-rootfs"         # Temporary mount point
+TEMP_MOUNT="/mnt/temp-rootfs"                   # Temporary mount point
 
 echo "[1/4] Creating base Debian rootfs..."
 sudo mkdir -p "$ROOTFS_DIR"
