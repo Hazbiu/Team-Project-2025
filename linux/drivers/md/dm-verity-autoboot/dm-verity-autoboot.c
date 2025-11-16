@@ -16,7 +16,6 @@
  *     1. Resolves the block device for autoboot_device (e.g. /dev/vda)
  *     2. Reads the last 4 KiB of the device
  *     3. Distinguishes:
- *          - Attached footer ("VERI"): 4 KiB footer = header + PKCS7
  *          - Detached footer ("VLOC"): footer is a locator pointing to:
  *                [ ... data ... ][hash tree][header][signature][locator]
  *     4. Verifies a PKCS7 signature (using the kernel trusted keyring)
@@ -54,7 +53,6 @@
 #define DM_MSG_PREFIX              "verity-autoboot"
 
 #define VERITY_META_SIZE           4096
-#define VERITY_META_MAGIC          0x56455249 /* "VERI" */
 #define VERITY_FOOTER_SIGNED_LEN   196        /* bytes covered by PKCS7 */
 #define VERITY_PKCS7_MAX           2048
 #define VLOC_MAGIC                 0x564C4F43 /* "VLOC" */
@@ -206,43 +204,6 @@ static int resolve_dev_from_diskname(const char *path, dev_t *out_dev)
 	return -ENODEV;
 }
 
-/* ----- read attached footer ----- */
-static int read_metadata_footer_attached(struct file *f,
-				struct verity_metadata_ondisk *meta)
-{
-	loff_t size, pos;
-	ssize_t bytes;
-
-	size = i_size_read(file_inode(f));
-	if (size < VERITY_META_SIZE) {
-		pr_err("%s: device too small (%lld bytes)\n",
-		       DM_MSG_PREFIX, size);
-		return -EINVAL;
-	}
-
-	pos = size - VERITY_META_SIZE;
-	bytes = kernel_read(f, meta, VERITY_META_SIZE, &pos);
-	if (bytes != VERITY_META_SIZE) {
-		pr_err("%s: kernel_read footer failed (%zd)\n",
-		       DM_MSG_PREFIX, bytes);
-		return -EIO;
-	}
-
-	if (le32_to_cpu(meta->magic) != VERITY_META_MAGIC) {
-		pr_err("%s: bad magic 0x%08x (expected 0x%08x)\n",
-		       DM_MSG_PREFIX,
-		       le32_to_cpu(meta->magic),
-		       VERITY_META_MAGIC);
-		return -EINVAL;
-	}
-
-	/* Use centralized metadata parser + logger */
-	verity_parse_metadata_header((const struct verity_metadata_header *)meta);
-
-	return 0;
-}
-
-
 
 /* ----- main worker: verify & create mapping ----- */
 
@@ -300,75 +261,7 @@ static int verity_autoboot_main(void)
 		{
 			__le32 magic = *(__le32 *)tail;
 
-			if (le32_to_cpu(magic) == VERITY_META_MAGIC) {
-				/* Attached metadata footer ("VERI") */
-				struct verity_metadata_ondisk *meta;
-				const struct verity_metadata_header *h;
-
-				meta = kmalloc(sizeof(*meta), GFP_KERNEL);
-				if (!meta) {
-					fput(bdev_file);
-					return -ENOMEM;
-				}
-
-				pr_info("%s: Footer mode: attached (VERI)\n",
-					DM_MSG_PREFIX);
-
-				ret = read_metadata_footer_attached(bdev_file, meta);
-				if (ret) {
-					kfree(meta);
-					fput(bdev_file);
-					return ret;
-				}
-
-				pr_info("%s: Attached metadata footer read and parsed successfully\n",
-					DM_MSG_PREFIX);
-
-				ret = verify_signature_pkcs7_attached(meta);
-				if (ret) {
-					kfree(meta);
-					fput(bdev_file);
-					pr_emerg("%s: signature verification FAILED (attached), ret=%d\n",
-						 DM_MSG_PREFIX, ret);
-					panic("dm-verity-autoboot: untrusted rootfs footer");
-				}
-
-				pr_info("%s: Signature verification PASSED (attached)\n", DM_MSG_PREFIX);
-
-				h = (const struct verity_metadata_header *)meta;
-
-				//Validate + log metadata fields using separated logic */
-				ret = verity_parse_metadata_header(h);
-				if (ret) {
-					kfree(meta);
-					fput(bdev_file);
-					pr_emerg("%s: metadata header validation FAILED, ret=%d\n",
-							DM_MSG_PREFIX, ret);
-					panic("dm-verity-autoboot: invalid metadata header");
-				}
-
-
-				/*
-				 * CRITICAL: Close the underlying block device
-				 * before creating the dm-verity mapping.
-				 * dm-verity wants exclusive access.
-				 */
-				fput(bdev_file);
-				bdev_file = NULL;
-
-				ret = verity_create_mapping(dev, h);
-
-				if (ret) {
-					kfree(meta);
-					pr_emerg("%s: dm-verity mapping creation FAILED (attached), ret=%d\n",
-						 DM_MSG_PREFIX, ret);
-					panic("dm-verity-autoboot: failed to create dm-verity mapping");
-				}
-
-				kfree(meta);
-				return 0;
-
-			} else if (le32_to_cpu(magic) == VLOC_MAGIC) {
+			if (le32_to_cpu(magic) == VLOC_MAGIC) {
 				/* Detached metadata/signature indicated by VLOC footer */
 				struct verity_footer_locator loc;
 				u8 *meta_buf = NULL, *sig_buf = NULL;
