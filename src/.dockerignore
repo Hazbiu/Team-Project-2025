@@ -1,0 +1,5 @@
+# Ignore only large output, not the build scripts
+build/Binaries/
+build/Binaries/**
+build/rootfs/
+build/rootfs/**
