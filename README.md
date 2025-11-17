@@ -6,7 +6,7 @@ A production-ready implementation of dm-verity with PKCS7 signature verification
 
 This solution implements a complete secure boot chain where:
 
-1. The host launches QEMU directly with a Linux kernel and a raw disk image.
+1. The host launches QEMU directly with a Linux kernel and a raw disk image (either natively or from inside Docker).
 2. A **modular** in-kernel helper (`dm-verity-autoboot` family) performs dm-verity setup and signature verification.
 3. The verified filesystem is mounted as the root device.
 
@@ -26,63 +26,95 @@ The early-boot helper is now split into four logical components:
 - **Modular kernel design** – Clear separation of parsing, verification, and mapping logic.  
 - **Robustness suite** – `integrity_tests.sh` to fuzz metadata and test parser hardening.  
 
----
+### Build Options
 
-## Architecture
+You can work with this project in two ways:
 
-### On-Disk Layout
+1. **Docker-based build environment (recommended)** – The host only needs Docker. All build tools and dependencies live inside a container, and QEMU runs from within that container.
+2. **Native (non-Docker) build** – Install all dependencies directly on the host and run the build scripts as usual.
 
-```text
-[ext4 filesystem data] [dm-verity hash tree] [metadata header] [PKCS7 signature] [VLOC locator]
-                                              ↑                 ↑                   ↑
-                                              196 bytes         DER format          4 KiB footer
-```
-
-The VLOC (Verity LOCator) footer at the end of the disk provides offsets to the metadata and signature regions, enabling the kernel module to locate and verify all components.
-
-### Boot Flow
-
-```text
-┌────────────────────┐
-│   Host System      │  Runs src/build/launch_qemu.sh
-│ (user space)       │  QEMU + kernel + rootfs.img
-└─────────┬──────────┘
-          │
-          ▼
-┌────────────────────┐
-│   Linux Kernel     │  Boots, initializes virtio-blk (/dev/vda)
-└─────────┬──────────┘
-          │
-          ▼
-┌──────────────────────────────────────────────┐
-│ dm-verity autoboot stack                     │
-│  - dm-verity-autoboot.c                      │
-│  - metadata_parse.c                          │
-│  - signature_verify.c                        │
-│  - mapping.c                                 │
-│                                              │
-│ 1. Read tail 4 KiB → detect VERI vs VLOC     │
-│ 2. Read metadata + PKCS7 signature           │
-│ 3. Verify PKCS7 via kernel trusted keyring   │
-│ 4. Create dm-verity mapping (/dev/dm-0)      │
-└─────────┬────────────────────────────────────┘
-          │
-          ▼
-┌────────────────────┐
-│    Root Mount      │  Kernel mounts /dev/dm-0 as ext4 root
-│     (verified)     │  System boots from verified filesystem
-└────────────────────┘
-```
-
-The kernel command line used by QEMU is:
-
-```text
-console=ttyS0 loglevel=7 root=/dev/dm-0 rootfstype=ext4 rootwait dm_verity_autoboot.autoboot_device=/dev/vda dm_verity_autoboot.mode=verify_and_map
-```
+The Docker workflow is ideal for reproducible builds, classroom environments, and avoiding “works on my machine” issues.
 
 ---
 
-## Prerequisites
+## Build & Run with Docker (recommended)
+
+### 1. Install Docker on the host (one-time)
+
+On Ubuntu (including many VMware-based setups), you can use the helper script at the repository root:
+
+```bash
+./docker_setup.sh
+```
+
+This script will:
+
+- Update your system package lists.  
+- Install Docker’s APT dependencies (`ca-certificates`, `curl`, `gnupg`, `lsb-release`).  
+- Add Docker’s official GPG key and APT repository.  
+- Remove any legacy `docker.io` package.  
+- Install the modern Docker Engine stack (`docker-ce`, `docker-ce-cli`, `containerd.io`, `docker-buildx-plugin`, `docker-compose-plugin`).  
+- Enable and start `docker.socket` (important for some VMware guests).  
+- Restart the Docker daemon.  
+- Add your current user to the `docker` group.  
+- Trigger a reboot so group membership and services are cleanly applied.
+
+> **Note:** Review the script before running it, and be aware it will reboot the system at the end.
+
+If you already have a working Docker installation, you can skip this step.
+
+### 2. One-shot build & boot with Docker
+
+From the repository root, simply run:
+
+```bash
+./docker_run.sh
+```
+
+This script encapsulates the complete workflow you would otherwise perform manually:
+
+1. **Clean up the host environment**
+   - Kills any leftover `qemu-system-x86_64` processes that may still be holding `rootfs.img` open.
+   - Stops any running Docker containers.
+   - Removes stopped containers.
+   - Deletes stale `.lck` lock files under `build/Binaries/`.
+
+2. **Build the Docker image**
+   - Builds a Docker image named `secureos-builder` from the top-level `Dockerfile`.
+
+3. **Run the build inside a privileged container**
+   - Launches a privileged container from `secureos-builder` with:
+     - The repository mounted as `/workspace`.
+   - Inside the container it:
+     - Removes any leftover `.lck` files in `/workspace/build/Binaries/`.
+     - Changes into `/workspace/build`.
+     - Executes `./build_artifacts.sh` to create the root filesystem and dm-verity metadata.
+     - Executes `./launch_qemu.sh` to boot the verified system in QEMU.
+
+All QEMU output will be shown in your terminal. When you exit QEMU, the container will also exit.
+
+### 3. Re-running after code changes
+
+After modifying the kernel, build scripts, or rootfs configuration:
+
+```bash
+./docker_run.sh
+```
+
+The script will:
+
+- Rebuild the Docker image if the `Dockerfile` or build context changed.
+- Regenerate the artifacts via `build_artifacts.sh` inside the container.
+- Launch QEMU again with the new artifacts.
+
+This keeps your host clean, while ensuring builds are reproducible and isolated.
+
+---
+
+## Prerequisites (manual / non-Docker build)
+
+> **Skip this section if you are using the Docker-based workflow above.**  
+> All of these dependencies are already installed inside the `secureos-builder` image.
 
 ### System Requirements
 
@@ -135,7 +167,7 @@ linux/drivers/md/dm-verity-autoboot/
     Makefile
 ```
 
-The built kernel image is exported to `src/bootloaders/kernel_image.bin`.
+The built kernel image is exported to `bootloaders/kernel_image.bin`.
 
 ---
 
@@ -153,25 +185,79 @@ High-level layout:
 │       ├── signature_verify.c/.h  # PKCS7 verification (attached/detached)
 │       └── Makefile
 ├── rootfs/                        # Rootfs seed/configuration
-└── src/
-    ├── boot/
-    │   ├── bl_private.pem         # Signing private key (generated locally)
-    │   └── bl_cert.pem            # Signing certificate
-    ├── bootloaders/
-    │   ├── bzImage                # Built kernel image
-    │   ├── kernel_image.bin       # Copy used by QEMU
-    │   └── qemu_main.sh           # (Optional) helper / menu launcher
-    └── build/
-        ├── Binaries/
-        │   ├── rootfs.img         # Final whole-disk ext4 image
-        │   └── metadata/          # dm-verity artifacts
-        ├── build_artifacts.sh     # Rootfs + verity orchestration
-        ├── build_rootfs.sh        # Creates ext4 disk image
-        ├── generate_verity.sh     # Builds hash tree + metadata + VLOC
-        ├── integrity_tests.sh     # Robustness & fuzz testing suite
-        └── launch_qemu.sh         # QEMU launcher (no separate bootloader)
+├── boot/
+│   ├── bl_private.pem             # Signing private key (generated locally)
+│   └── bl_cert.pem                # Signing certificate
+├── bootloaders/
+│   ├── bzImage                    # Built kernel image
+│   ├── kernel_image.bin           # Copy used by QEMU
+│   └── qemu_main.sh               # (Optional) helper / menu launcher
+├── build/
+│   ├── Binaries/
+│   │   ├── rootfs.img             # Final whole-disk ext4 image
+│   │   └── metadata/              # dm-verity artifacts
+│   ├── build_artifacts.sh         # Rootfs + verity orchestration
+│   ├── build_rootfs.sh            # Creates ext4 disk image
+│   ├── generate_verity.sh         # Builds hash tree + metadata + VLOC
+│   ├── integrity_tests.sh         # Robustness & fuzz testing suite
+│   └── launch_qemu.sh             # QEMU launcher (no separate bootloader)
 ├── Dockerfile
-└── README.md
+├── docker_run.sh                  # Cleans and runs Docker-based build + QEMU
+└── docker_setup.sh                # Host helper to install Docker (Ubuntu)
+```
+
+---
+
+## Architecture
+
+### On-Disk Layout
+
+```text
+[ext4 filesystem data] [dm-verity hash tree] [metadata header] [PKCS7 signature] [VLOC locator]
+                                              ↑                 ↑                   ↑
+                                              196 bytes         DER format          4 KiB footer
+```
+
+The VLOC (Verity LOCator) footer at the end of the disk provides offsets to the metadata and signature regions, enabling the kernel module to locate and verify all components.
+
+### Boot Flow
+
+```text
+┌────────────────────┐
+│   Host System      │  Runs build/launch_qemu.sh
+│ (user space)       │  QEMU + kernel + rootfs.img
+└─────────┬──────────┘
+          │
+          ▼
+┌────────────────────┐
+│   Linux Kernel     │  Boots, initializes virtio-blk (/dev/vda)
+└─────────┬──────────┘
+          │
+          ▼
+┌──────────────────────────────────────────────┐
+│ dm-verity autoboot stack                     │
+│  - dm-verity-autoboot.c                      │
+│  - metadata_parse.c                          │
+│  - signature_verify.c                        │
+│  - mapping.c                                 │
+│                                              │
+│ 1. Read tail 4 KiB → detect VERI vs VLOC     │
+│ 2. Read metadata + PKCS7 signature           │
+│ 3. Verify PKCS7 via kernel trusted keyring   │
+│ 4. Create dm-verity mapping (/dev/dm-0)      │
+└─────────┬────────────────────────────────────┘
+          │
+          ▼
+┌────────────────────┐
+│    Root Mount      │  Kernel mounts /dev/dm-0 as ext4 root
+│     (verified)     │  System boots from verified filesystem
+└────────────────────┘
+```
+
+The kernel command line used by QEMU is:
+
+```text
+console=ttyS0 loglevel=7 root=/dev/dm-0 rootfstype=ext4 rootwait dm_verity_autoboot.autoboot_device=/dev/vda dm_verity_autoboot.mode=verify_and_map
 ```
 
 ---
@@ -189,7 +275,7 @@ Creates a minimal Debian-based root filesystem on a single-disk image without pa
 - Sizes disk to accommodate filesystem + dm-verity overhead.  
 - Creates ext4 directly on the whole disk (no GPT).  
 
-**Output:** `src/build/Binaries/rootfs.img`  
+**Output:** `build/Binaries/rootfs.img`  
 
 ---
 
@@ -206,7 +292,7 @@ Generates dm-verity Merkle tree and cryptographic metadata.
 5. Signs header with PKCS7 (detached signature).  
 6. Writes metadata, signature, and VLOC locator to disk end.  
 
-**Output (under `src/build/Binaries/metadata/`):**
+**Output (under `build/Binaries/metadata/`):**
 
 - `root.hash` – Root hash (hex).  
 - `verity_header.bin` – Metadata header (196 bytes).  
@@ -226,14 +312,16 @@ Unified build script for preparing boot artifacts.
 2. Runs `generate_verity.sh`.  
 3. Verifies that `Binaries/rootfs.img` exists.  
 
-Usage:
+Usage (non-Docker):
 
 ```bash
-cd src/build/
+cd build/
 ./build_artifacts.sh
 ```
 
 This script only prepares artifacts; it does **not** launch QEMU.
+
+When using Docker, `docker_run.sh` will call this script for you inside the container.
 
 ---
 
@@ -243,8 +331,8 @@ QEMU launcher (replaces the older “userspace bootloader”).
 
 **Responsibilities:**
 
-- Uses `src/bootloaders/kernel_image.bin`.  
-- Attaches `Binaries/rootfs.img` as virtio-blk.  
+- Uses `bootloaders/kernel_image.bin`.  
+- Attaches `build/Binaries/rootfs.img` as virtio-blk.  
 - Sets kernel cmdline parameters for dm-verity autoboot.
 
 Excerpt:
@@ -259,6 +347,8 @@ exec qemu-system-x86_64   -kernel "$KERNEL"   -drive if=none,file="$ROOTFS",form
 ```
 
 You can customize RAM, CPUs, and acceleration directly in this script.
+
+When using Docker, `launch_qemu.sh` is invoked inside the container by `docker_run.sh`.
 
 ---
 
@@ -363,12 +453,12 @@ Robustness and fuzz-testing suite for dm-verity metadata.
   - Buffer overflow prevention.  
   - Error handling for malformed on-disk structures.  
 
-**Typical workflow:**
+**Typical workflow (non-Docker):**
 
 1. Create a test image:
 
    ```bash
-   cd src/build/
+   cd build/
    ./integrity_tests.sh <mode>
    ```
 
@@ -383,15 +473,15 @@ Robustness and fuzz-testing suite for dm-verity metadata.
 
 **Supported modes:**
 
-| Mode         | What it corrupts                                          | Intention                                             |
-|--------------|-----------------------------------------------------------|-------------------------------------------------------|
-| `meta1`      | Flips one byte in the 196-byte header                    | Tests header integrity & digest mismatch detection    |
-| `sig1`       | Flips one byte in PKCS7 signature blob                   | Tests PKCS7 parsing and cryptographic verification    |
+| Mode           | What it corrupts                                        | Intention                                             |
+|----------------|---------------------------------------------------------|-------------------------------------------------------|
+| `meta1`        | Flips one byte in the 196-byte header                  | Tests header integrity & digest mismatch detection    |
+| `sig1`         | Flips one byte in PKCS7 signature blob                 | Tests PKCS7 parsing and cryptographic verification    |
 | `int_overflow` | Writes wrap-around values into locator fields          | Tests 32/64-bit overflow handling in offset math      |
 | `buf_overflow` | Sets metadata length to `0xFFFFFFFF`                   | Tests allocation limits and buffer size validation    |
-| `trunc_meta` | Claims metadata extends beyond disk capacity             | Tests truncated reads and bounds checks               |
-| `bad_offsets`| Places meta/sig offsets well beyond disk end             | Tests rejection of out-of-bounds offsets              |
-| `sanitize`   | Replaces locator with random garbage                     | Tests magic validation and general input sanitization |
+| `trunc_meta`   | Claims metadata extends beyond disk capacity           | Tests truncated reads and bounds checks               |
+| `bad_offsets`  | Places meta/sig offsets well beyond disk end           | Tests rejection of out-of-bounds offsets              |
+| `sanitize`     | Replaces locator with random garbage                   | Tests magic validation and general input sanitization |
 
 **Key options:**
 
@@ -401,6 +491,8 @@ Robustness and fuzz-testing suite for dm-verity metadata.
 - `--verbose` – Extra debug output.  
 - `--restore` – Restore from previously created `.bak` backup.  
 
+When running via Docker, you can still use `integrity_tests.sh` inside the container by modifying `docker_run.sh` to call it before `launch_qemu.sh`.
+
 ---
 
 ## Usage
@@ -408,7 +500,7 @@ Robustness and fuzz-testing suite for dm-verity metadata.
 ### 1. Generate Signing Keys (one-time)
 
 ```bash
-cd src/boot/
+cd boot/
 
 # Private key
 openssl genrsa -out bl_private.pem 2048
@@ -421,11 +513,13 @@ Ensure the certificate is built into or enrolled in the kernel trusted keyring.
 
 ---
 
-### 2. Quick Start: Build & Boot
+### 2. Quick Start: Build & Boot (non-Docker)
+
+If you are running everything directly on the host (no Docker):
 
 ```bash
 # From repository root
-cd src/build/
+cd build/
 
 # Build rootfs + dm-verity metadata
 ./build_artifacts.sh
@@ -434,14 +528,22 @@ cd src/build/
 ./launch_qemu.sh
 ```
 
+For the Docker-based workflow, simply use:
+
+```bash
+./docker_run.sh
+```
+
+from the repository root instead.
+
 ---
 
 ### 3. Running Integrity Tests
 
-Example: corrupt the metadata header in a **copy** of the image.
+Example: corrupt the metadata header in a **copy** of the image (non-Docker flow):
 
 ```bash
-cd src/build/
+cd build/
 
 # Create rootfs.meta1.test.img and corrupt its header
 ./integrity_tests.sh meta1
@@ -456,6 +558,8 @@ Example: in-place corruption with automatic backup:
 ./integrity_tests.sh sig1 --inplace --backup --yes
 ./launch_qemu.sh
 ```
+
+You can adapt `docker_run.sh` to call `integrity_tests.sh` inside the container if you prefer to run tests from Docker.
 
 ---
 
@@ -491,7 +595,7 @@ Watch QEMU console output:
 
 ### Disk Size Tuning
 
-In `src/build/build_rootfs.sh`:
+In `build/build_rootfs.sh`:
 
 ```bash
 VERITY_SPACE_MB=$((ROOTFS_SIZE_MB / 5 + 20))
@@ -502,7 +606,7 @@ Adjust the formula to increase or reduce space reserved for the Merkle tree and 
 
 ### Kernel Parameters
 
-Modify `APPEND_CMD` in `launch_qemu.sh`:
+Modify `APPEND_CMD` in `build/launch_qemu.sh`:
 
 - `console=ttyS0,115200` – Serial console.  
 - `loglevel=7` – Verbosity (debug).  
@@ -521,7 +625,7 @@ Also in `launch_qemu.sh`, you can adjust:
 -smp 2                # Number of vCPUs
 ```
 
-Switch to `accel=kvm` if KVM is available.
+Switch to `accel=kvm` if KVM is available (inside Docker this usually requires passing `/dev/kvm` through and running on a host with KVM support).
 
 ---
 
@@ -580,10 +684,10 @@ Offset  Size  Field             Description
 
 ### C. Kernel Module Parameters
 
-| Parameter        | Type   | Example              | Description                                  |
-|------------------|--------|----------------------|----------------------------------------------|
-| `autoboot_device`| string | `/dev/vda`           | Whole-disk block device with verity footer   |
-| `mode`           | string | `verify_and_map`     | Behavior (verification + mapping)            |
+| Parameter         | Type   | Example              | Description                                  |
+|-------------------|--------|----------------------|----------------------------------------------|
+| `autoboot_device` | string | `/dev/vda`           | Whole-disk block device with verity footer   |
+| `mode`            | string | `verify_and_map`     | Behavior (verification + mapping)            |
 
 Example on cmdline:
 

@@ -2,7 +2,7 @@
 src/build/Binaries/rootfs/
 src/build/Binaries/rootfs.img
 src/build/Binaries/metadata/
-src/build/Binaries/kernel_image.bin
+
 
 # dm-verity Test Images and Generated Files
 # Root filesystem images
