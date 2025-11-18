@@ -6,6 +6,7 @@ src/build/Binaries/rootfs.img
 src/build/Binaries/metadata/
 #src/build/Binaries/kernel_image.bin
 
+
 # ======================================================
 # dm-verity Test Images and Generated Files
 # ======================================================
@@ -19,11 +20,13 @@ rootfs.*.test.img
 # dm-verity metadata directory
 Binaries/metadata/
 
+
 # ======================================================
 # Backup files from in-place modifications
 # ======================================================
 *.bak
 Binaries/*.bak
+
 
 # ======================================================
 # Temporary files and build artifacts
@@ -36,21 +39,25 @@ __pycache__/
 *.pyc
 *.pyo
 
+
 # ======================================================
 # Loop device related (if any tracking files exist)
 # ======================================================
 *.loop
+
 
 # ======================================================
 # Offset files generated during testing
 # ======================================================
 layout_offsets.sh
 
+
 # ======================================================
 # QEMU related artifacts
 # ======================================================
 qemu-*
 *.qcow2
+
 
 # ======================================================
 # Test harness logs
