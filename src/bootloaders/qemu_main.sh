@@ -16,6 +16,7 @@ set -u  # treat unset vars as an error
 # All security logic (dm-verity tree, detached PKCS7 verification,
 # dm-verity mapping creation, and mounting the verified rootfs) happens
 # entirely inside the kernel.
+# ==================================================================
 
 IMG_REL="../build/Binaries/rootfs.img"
 
