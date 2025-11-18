@@ -38,8 +38,8 @@ set -eo pipefail
 #       - Stores detailed logs for each test, including QEMU serial output
 #       - Aggregates all results in a central 'test_results.txt'
 #
-#      NOTE: Certain test cases (sig1, meta1, etc.) may trigger a kernel panic.
-#      These are considered valid REJECT outcomes and are counted as passing.
+#     NOTE: Certain test cases (sig1, meta1, etc.) may trigger a kernel panic.
+#     These are considered valid REJECT outcomes and are counted as passing.
 #
 # Usage:
 #   ./run_verity_tests.sh [OPTIONS]
@@ -60,7 +60,7 @@ set -eo pipefail
 #
 # Maintainer:
 #   <TEAM A>
-#   Last Updated: 2025-11-17
+#   Last Updated: 2025-11-18
 # ================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -92,8 +92,8 @@ TEST_ORDER=(
 )
 
 declare -A TEST_MODES=(
-    ["meta1"]="KERNEL_PANIC:Corrupted header should be rejected"
-    ["sig1"]="KERNEL_PANIC:Invalid signature should be rejected"  
+    ["meta1"]="REJECT:Corrupted header should be rejected"
+    ["sig1"]="REJECT:Invalid signature should be rejected"  
     ["int_overflow"]="REJECT:Integer overflow should be caught"
     ["buf_overflow"]="REJECT:Oversized metadata should be rejected"
     ["trunc_meta"]="REJECT:Out-of-bounds metadata should be rejected"
@@ -187,6 +187,7 @@ check_test_images_exist() {
     log "INFO" "Checking if all required test images exist..."
     local missing=0
     for mode in "${TEST_ORDER[@]}"; do
+        if [[ "$mode" == "baseline" ]]; then continue; fi
         local test_image="$BINARIES_DIR/rootfs.${mode}.test.img"
         if [[ ! -f "$test_image" ]]; then
             log "DEBUG" "Missing image for mode: $mode ($test_image)"
@@ -209,6 +210,7 @@ generate_test_images() {
     local generated=0 failed=0
     
     for mode in "${TEST_ORDER[@]}"; do
+        if [[ "$mode" == "baseline" ]]; then continue; fi
         local test_image="$BINARIES_DIR/rootfs.${mode}.test.img"
         if [[ ! -f "$test_image" ]]; then
             log "INFO" "Creating test image for: $mode"
@@ -237,8 +239,8 @@ generate_test_images() {
 # Run single test
 # ======================================================
 run_single_test() {
-     local test_name=$1
-    local test_image="$BINARIES_DIR/rootfs.${test_name}.test.img" 
+    local test_name=$1
+    local test_image=$2
     local log_file="$LOG_DIR/qemu_${test_name}.log"
     local serial_log="$LOG_DIR/qemu_${test_name}_serial.log"
 
@@ -309,10 +311,10 @@ analyze_boot_behavior() {
     
     if grep -q -i "dm-verity-autoboot: untrusted" "$log_file" ||
        grep -q -i "signature verification FAILED" "$log_file" ||
-       grep -q -i "unknown tail magic" "$log_file" ||           
-       grep -q -i "corrupted metadata" "$log_file" ||           
-       grep -q -i "invalid signature" "$log_file" ||            
-       grep -q -i "hash verification failed" "$log_file" ||     
+       grep -q -i "unknown tail magic" "$log_file" ||
+       grep -q -i "corrupted metadata" "$log_file" ||
+       grep -q -i "invalid signature" "$log_file" ||
+       grep -q -i "hash verification failed" "$log_file" ||
        grep -q -i "VALIDATION FAILED" "$log_file"; then
         echo "REJECTED"; return
     fi
@@ -367,7 +369,7 @@ show_progress() {
 # ======================================================
 main() {
     local KEEP_IMAGES=0 NO_COLOR=0
-    TEST_TIMEOUT=30
+    TEST_TIMEOUT=20
 
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -413,7 +415,7 @@ main() {
     declare -A test_results test_behaviors
     local total_tests=0 passed_tests=0 failed_tests=0 inconclusive_tests=0
 
-    # Build test list
+    # Build test list 
     local test_names=()
     for test in "${TEST_ORDER[@]}"; do
         test_names+=("$test")
