@@ -24,12 +24,13 @@ set -eo pipefail
 #       - Generates missing test images using integrity_tests.sh
 #       - Maintains a predictable test order to ensure reproducibility
 #   4. QEMU Execution:
-#       - Launches qemu_tests.sh for each test image
+#       - Launches qemu_tests.sh for each test image with dual timeout strategy
+#       - Uses shorter timeout (15s) for rejection tests, longer (45s) for boot tests
 #       - Captures exit codes and serial console output
 #       - Supports optional logging to files or standard output
 #   5. Log Analysis:
 #       - Parses boot logs for kernel panic, init messages, and dm-verity verification failures
-#       - Classifies results as BOOT_SUCCESS, REJECTED, KERNEL_PANIC, TIMEOUT, or UNKNOWN
+#       - Classifies results as BOOT_SUCCESS, REJECTED, KERNEL_PANIC, TIMEOUT_WITH_PROGRESS, TIMEOUT_NO_OUTPUT, or UNKNOWN
 #   6. Result Evaluation:
 #       - Compares actual boot behavior against expected behavior per test mode
 #       - Marks each test as PASSED, FAILED, INCONCLUSIVE, or SKIPPED
@@ -38,26 +39,37 @@ set -eo pipefail
 #       - Stores detailed logs for each test, including QEMU serial output
 #       - Aggregates all results in a central 'test_results.txt'
 #
-#     NOTE: Certain test cases (sig1, meta1, etc.) may trigger a kernel panic.
-#     These are considered valid REJECT outcomes and are counted as passing.
+#     NOTE: 
+#     - Certain test cases (sig1, meta1, etc.) may trigger a kernel panic.
+#       These are considered valid REJECT outcomes and are counted as passing.
+#     - Timeout behavior is interpreted differently:
+#       * TIMEOUT_WITH_PROGRESS: Boot started but timed out (acceptable for best_case)
+#       * TIMEOUT_NO_OUTPUT: No boot progress before timeout (may indicate rejection)
+#     - Clean images (best_case) are expected to reach login prompt and timeout
 #
 # Usage:
 #   ./run_verity_tests.sh [OPTIONS]
 #   OPTIONS:
 #       --keep-images      Keep generated test images after execution
 #       --no-color         Disable color-coded output
-#       --timeout=N        Set the QEMU test timeout in seconds (default 30)
+#       --timeout=N        Set base QEMU test timeout in seconds (default: 15)
+#                         Boot tests use 3x this value (45s)
 #       --help             Show this help message
 #
 # Test Modes:
-#   - meta1          : Rejected if metadata header is corrupted
-#   - sig1           : Rejected if signature is invalid
-#   - int_overflow   : Rejected if integer overflow occurs in metadata
-#   - buf_overflow   : Rejected if metadata size exceeds limits
-#   - trunc_meta     : Rejected if metadata is truncated
-#   - bad_offsets    : Rejected if file offsets are invalid
-#   - sanitize       : Rejected if garbage input is provided
-#   - best_case      : Clean image should boot successfully
+#   - meta1          : Rejected if metadata header is corrupted (expect PANIC)
+#   - sig1           : Rejected if signature is invalid (expect PANIC)  
+#   - int_overflow   : Rejected if integer overflow occurs in metadata (expect REJECT)
+#   - buf_overflow   : Rejected if metadata size exceeds limits (expect REJECT)
+#   - trunc_meta     : Rejected if metadata is truncated (expect REJECT)
+#   - bad_offsets    : Rejected if file offsets are invalid (expect REJECT)
+#   - sanitize       : Rejected if garbage input is provided (expect REJECT)
+#   - best_case      : Clean image should boot successfully (expect BOOT_SUCCESS or TIMEOUT_WITH_PROGRESS)
+#
+# Timeout Strategy:
+#   - Rejection tests: 15s timeout (fail fast for corrupted images)
+#   - Boot tests: 45s timeout (allow time to reach login prompt)
+#   - QEMU exit code 124 indicates timeout (expected behavior for successful boots)
 #
 # Maintainer:
 #   <TEAM A>
