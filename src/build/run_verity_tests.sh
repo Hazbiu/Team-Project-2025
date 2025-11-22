@@ -71,7 +71,8 @@ QEMU_TESTS_SCRIPT="$PROJECT_ROOT/bootloaders/qemu_tests.sh"
 BINARIES_DIR="$SCRIPT_DIR/Binaries"
 LOG_DIR="$SCRIPT_DIR/test_logs"
 RESULTS_FILE="$LOG_DIR/test_results.txt"
-
+TEST_TIMEOUT=15
+BOOT_TIMEOUT=45
 # Ensure Binaries directory is owned by the current user and writable
 if [[ ! -w "$BINARIES_DIR" || "$(stat -c '%U' "$BINARIES_DIR")" != "$USER" ]]; then
     echo "Fixing ownership and permissions on Binaries directory..."
@@ -204,7 +205,6 @@ check_test_images_exist() {
         
         local test_image="$BINARIES_DIR/rootfs.${mode}.test.img"
         if [[ ! -f "$test_image" ]]; then
-            log "DEBUG" "Missing image for mode: $mode ($test_image)"
             missing=$((missing + 1))
         fi
     done
@@ -258,6 +258,7 @@ generate_test_images() {
 run_single_test() {
     local test_name=$1
     local test_image=$2
+    local timeout_val=$3
     local log_file="$LOG_DIR/qemu_${test_name}.log"
     local serial_log="$LOG_DIR/qemu_${test_name}_serial.log"
     local qemu_exit=0
@@ -276,7 +277,7 @@ run_single_test() {
     # Disable exit-on-error for QEMU execution
     # timeout returns 124 on timeout, QEMU may return various codes
     set +e
-    timeout -k 5 "${TEST_TIMEOUT}" ./qemu_tests.sh "$test_image_abs" "$serial_log" >> "$log_file" 2>&1
+    timeout -k 5 "${timeout_val}" ./qemu_tests.sh "$test_image_abs" "$serial_log" >> "$log_file" 2>&1
     qemu_exit=$?
     set -e
 
@@ -377,9 +378,6 @@ evaluate_test_result() {
     local test_name=$1
     local actual_behavior=$2
     local expected_behavior=$3
-    
-    # Log the evaluation for debugging
-    log "DEBUG" "Evaluating: test=$test_name actual=$actual_behavior expected=$expected_behavior"
     
     case "$expected_behavior" in
         "BOOT")
@@ -509,14 +507,15 @@ print_summary() {
 # ======================================================
 main() {
     local KEEP_IMAGES=0 NO_COLOR=0
-    TEST_TIMEOUT=30
+    TEST_TIMEOUT=15
+    BOOT_TIMEOUT=45
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case $1 in
             --keep-images) KEEP_IMAGES=1 ;;
             --no-color) NO_COLOR=1 ;;
-            --timeout=*) TEST_TIMEOUT="${1#*=}" ;;
+            --timeout=*) TEST_TIMEOUT="${1#*=}"; BOOT_TIMEOUT=$((TEST_TIMEOUT * 3)) ;;
             --help) usage; exit 0 ;;
             *) echo "Unknown option: $1"; usage; exit 1 ;;
         esac
@@ -566,9 +565,6 @@ main() {
         total_tests=$((total_tests + 1))
     done
 
-    log "DEBUG" "Test queue: ${test_names[*]}"
-    log "DEBUG" "Total tests: $total_tests"
-    
     echo -e "${CYAN}Running ${total_tests} security behavior tests...${NC}"
     echo ""
 
@@ -585,12 +581,14 @@ main() {
         # Get expected behavior
         IFS=':' read -r expected_behavior description <<< "${TEST_MODES[$test_name]}"
         
-        # Determine test image path
-        local test_image
+        # Determine test image path and timeout
+        local test_image timeout_val
         if [[ "$test_name" == "best_case" ]]; then
             test_image="$BINARIES_DIR/rootfs.img"
+            timeout_val=$BOOT_TIMEOUT
         else
             test_image="$BINARIES_DIR/rootfs.${test_name}.test.img"
+            timeout_val=$TEST_TIMEOUT
         fi
 
         # Check if image exists
@@ -602,12 +600,10 @@ main() {
             current_test=$((current_test + 1))
             continue
         fi
-
-        log "DEBUG" "Running test: $test_name with image: $test_image"
         
         # Run the test - capture log file path
         local log_file
-        log_file=$(run_single_test "$test_name" "$test_image")
+        log_file=$(run_single_test "$test_name" "$test_image" "$timeout_val")
         
         # Analyze the boot behavior from logs
         local actual_behavior
