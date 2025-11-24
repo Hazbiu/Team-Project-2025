@@ -1,30 +1,23 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/*
- * dm-verity-autoboot.c
+
+/**
+ * @file dm-verity-autoboot.c
+ * @brief Early-boot dm-verity helper for whole-disk verified rootfs.
  *
- * Built-in helper for early-boot dm-verity on a whole-disk image.
+ * Built-in helper that:
+ *  - Resolves the autoboot block device from the kernel cmdline
+ *  - Reads the VLOC footer from the last 4 KiB
+ *  - Loads detached metadata + PKCS7 signature
+ *  - Verifies metadata using kernel trusted keyring
+ *  - Creates /dev/dm-0 using dm_early_create()
  *
- * Boot flow overview:
- *
- *   Bootloader:
- *     - Passes the whole-disk device path via kernel cmdline:
- *
- *         dm_verity_autoboot.autoboot_device=/dev/vda
- *         root=/dev/dm-0 rootfstype=ext4 rootwait ...
- *
- *   This module:
- *     1. Resolves the block device for autoboot_device (e.g. /dev/vda)
- *     2. Reads the last 4 KiB of the device
- *     3. Distinguishes:
- *          - Detached footer ("VLOC"): footer is a locator pointing to:
- *                [ ... data ... ][hash tree][header][signature][locator]
- *     4. Verifies a PKCS7 signature (using the kernel trusted keyring)
- *        over the 196-byte metadata header.
- *     5. Uses dm_early_create() to create a dm-verity mapping:
- *            name="verity_root"  → typically /dev/dm-0
- *   Core kernel:
- *     - Mounts /dev/dm-0 as the ext4 root filesystem.
- */
+ * Boot flow:
+ *  1. Bootloader provides:
+ *        dm_verity_autoboot.autoboot_device=/dev/vda
+ *        root=/dev/dm-0 rootfstype=ext4 rootwait
+ *  2. This module verifies metadata and sets up dm-verity
+ *  3. Kernel mounts /dev/dm-0 as verified rootfs
+ */ 
 
 #include <linux/init.h>
 #include <linux/module.h>
@@ -62,31 +55,20 @@ module_param(autoboot_device, charp, 0);
 MODULE_PARM_DESC(autoboot_device,
 	"Whole-disk block dev (e.g. /dev/vda) containing verity metadata+locator");
 
-/*
- * Full attached 4K footer ("VERI"):
- *   [header (196 bytes)] [salt_size/pkcs7_size] [PKCS7 DER] [padding]
- */
-struct verity_metadata_ondisk {
-	__le32 magic;
-	__le32 version;
-	__le64 data_blocks;
-	__le64 hash_start_sector;
-	__le32 data_block_size;
-	__le32 hash_block_size;
-	char   hash_algorithm[32];
-	u8     root_hash[64];
-	u8     salt[64];
-	__le32 salt_size;
-	__le32 pkcs7_size;
-	u8     pkcs7_blob[2048];
-	u8     reserved[4096 - 2248];
-} __packed;
 
-/*
- * Detached locator footer ("VLOC"), always at the last 4 KiB:
- *   - meta_off/meta_len: header region (196 bytes, padded to 4K)
- *   - sig_off/sig_len  : PKCS7 (DER) region
+/**
+ * @brief Compute a SHA-256 digest over a memory buffer.
+ *
+ * Allocates a temporary shash descriptor, runs the "sha256" shash
+ * implementation on @p buf, and writes the 32-byte digest.
+ *
+ * @param buf     Pointer to input buffer.
+ * @param len     Input length in bytes.
+ * @param digest  Output buffer for the 32-byte SHA-256 digest.
+ *
+ * @return 0 on success, negative errno on failure.
  */
+
 struct verity_footer_locator {
 	__le32 magic;
 	__le32 version;
@@ -149,9 +131,21 @@ static int compute_footer_digest(const struct verity_metadata_ondisk *meta,
 	return sha256_buf((const u8 *)meta, VERITY_FOOTER_SIGNED_LEN, digest);
 }
 
-/*
- * Read an arbitrary region (meta or sig) from the block device file.
+/**
+ * @brief Read an arbitrary region from the block device file.
+ *
+ * This is used to fetch the detached metadata and signature regions
+ * described by a VLOC footer.
+ *
+ * @param bdev_file Opened block-device file.
+ * @param off       Absolute byte offset on the device.
+ * @param len       Number of bytes to read (must be >0 and <= 8 MiB).
+ * @param out       On success, set to a kmalloc'ed buffer holding the data.
+ *
+ * @return 0 on success, negative errno on failure.
+ *         On error, @p *out is left untouched.
  */
+
 static int read_region(struct file *bdev_file, u64 off, u32 len, u8 **out)
 {
 	loff_t pos = off;
@@ -175,10 +169,19 @@ static int read_region(struct file *bdev_file, u64 off, u32 len, u8 **out)
 	return 0;
 }
 
-/*
- * Resolve "/dev/vda" or "vda" to a dev_t by matching gendisk->disk_name.
- * This does NOT depend on /dev/ nodes existing, so it works early in boot.
+/**
+ * @brief Resolve a disk name (e.g. "vda" or "/dev/vda") to a dev_t.
+ *
+ * Iterates over registered block devices and matches @p path against
+ * gendisk->disk_name. This does not depend on user-space /dev nodes,
+ * so it works early in boot.
+ *
+ * @param path    Disk name, optionally prefixed with "/dev/".
+ * @param out_dev Output: resolved device number on success.
+ *
+ * @return 0 on success, -ENODEV if no matching disk was found.
  */
+
 static int resolve_dev_from_diskname(const char *path, dev_t *out_dev)
 {
 	const char *name;
@@ -205,7 +208,23 @@ static int resolve_dev_from_diskname(const char *path, dev_t *out_dev)
 }
 
 
-/* ----- main worker: verify & create mapping ----- */
+/**
+ * @brief Main worker: verify dm-verity metadata and create mapping.
+ *
+ * High-level steps:
+ *  1. Resolve @ref autoboot_device to a block device.
+ *  2. Read the last 4 KiB tail to detect a VLOC footer.
+ *  3. Validate locator offsets and lengths against disk size.
+ *  4. Read metadata + signature regions referenced by the VLOC.
+ *  5. Verify PKCS7 signature over the metadata header.
+ *  6. Parse metadata header and log key fields.
+ *  7. Call verity_create_mapping() to build the dm-verity target.
+ *
+ * On fatal validation or signature failures, this function panics
+ * to prevent booting from untrusted metadata.
+ *
+ * @return 0 on success, negative errno on early error before panic().
+ */
 
 static int verity_autoboot_main(void)
 {
@@ -463,10 +482,16 @@ static void verity_autoboot_workfn(struct work_struct *work)
 }
 static DECLARE_DELAYED_WORK(verity_work, verity_autoboot_workfn);
 
-/*
- * init: print cmdline + param, then schedule the verification/mapping worker
- * a bit later so that the block device (virtio-blk, etc.) has time to appear.
+/**
+ * @brief Schedule the dm-verity autoboot worker during late init.
+ *
+ * Prints the kernel command line and the configured
+ * dm_verity_autoboot.autoboot_device parameter, then schedules
+ * the delayed work that performs verification and mapping creation.
+ *
+ * @return 0 always.
  */
+
 static int __init dm_verity_autoboot_init(void)
 {
 	extern char *saved_command_line;
